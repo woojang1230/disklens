@@ -1,2 +1,4 @@
+/src-tauri/target
+/src-tauri/gen
+/DiskLens.exe
 /target
-/disklens.exe

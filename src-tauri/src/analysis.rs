@@ -5,53 +5,38 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 
+/// 파일 종류. 이름과 색은 화면(JS)에 같은 순서로 정의되어 있습니다.
 pub struct Category {
-    pub name: &'static str,
-    pub color: [u8; 3],
     pub exts: &'static [&'static str],
 }
 
-pub const FOLDER_COLOR: [u8; 3] = [175, 169, 236];
-
 pub const CATS: [Category; 8] = [
     Category {
-        name: "동영상",
-        color: [240, 153, 123],
         exts: &[
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "mpg", "mpeg", "m2ts",
         ],
     },
     Category {
-        name: "이미지",
-        color: [93, 202, 165],
         exts: &[
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "raw", "cr2", "cr3", "nef", "arw",
             "dng", "tif", "tiff", "psd", "svg", "ico",
         ],
     },
     Category {
-        name: "음악",
-        color: [237, 147, 177],
         exts: &["mp3", "flac", "wav", "aac", "m4a", "ogg", "wma", "opus"],
     },
     Category {
-        name: "문서",
-        color: [133, 183, 235],
         exts: &[
             "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "hwp", "hwpx", "txt", "md", "csv",
             "epub",
         ],
     },
     Category {
-        name: "압축 파일",
-        color: [239, 159, 39],
         exts: &[
             "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "alz", "egg",
         ],
     },
     Category {
-        name: "설치·디스크 이미지",
-        color: [240, 149, 149],
         exts: &[
             "exe",
             "msi",
@@ -71,16 +56,12 @@ pub const CATS: [Category; 8] = [
         ],
     },
     Category {
-        name: "개발·라이브러리",
-        color: [151, 196, 89],
         exts: &[
             "dll", "so", "lib", "obj", "o", "pdb", "jar", "class", "pyc", "node", "rlib", "a",
             "wasm", "rmeta", "pch", "ipch",
         ],
     },
     Category {
-        name: "기타",
-        color: [180, 178, 169],
         exts: &[],
     },
 ];
@@ -159,7 +140,10 @@ pub struct TypeStats {
     /// CATS와 같은 순서: (크기, 개수)
     pub cats: Vec<(u64, u64)>,
     pub exts: Vec<ExtStat>,
+    #[allow(dead_code)]
     pub total: u64,
+    /// 서로 다른 확장자 수
+    pub kinds: usize,
 }
 
 pub fn type_stats(root: &Node, root_path: &Path) -> TypeStats {
@@ -191,8 +175,14 @@ pub fn type_stats(root: &Node, root_path: &Path) -> TypeStats {
         });
     }
     exts.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    let kinds = exts.len();
     exts.truncate(60);
-    TypeStats { cats, exts, total }
+    TypeStats {
+        cats,
+        exts,
+        total,
+        kinds,
+    }
 }
 
 /// 같은 크기의 파일이 2개 이상인 그룹 (중복 후보)

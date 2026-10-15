@@ -27,9 +27,12 @@ pub struct Progress {
     pub errors: AtomicU64,
     pub cancel: AtomicBool,
     pub current: Mutex<String>,
+    /// 스캔이 끝난 큰 폴더들 (경로, 크기) — 진행 화면의 '지금까지 찾은 큰 폴더'
+    pub found: Mutex<Vec<(String, u64)>>,
 }
 
-pub fn scan(root: &Path, prog: &Progress) -> Node {
+/// `skip`에 든 경로는 들어가지 않습니다(같은 데이터를 두 번 세는 것을 막기 위함).
+pub fn scan(root: &Path, prog: &Progress, skip: &[PathBuf]) -> Node {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -40,14 +43,14 @@ pub fn scan(root: &Path, prog: &Progress) -> Node {
         .stack_size(32 * 1024 * 1024)
         .build();
     let mut node = match pool {
-        Ok(p) => p.install(|| scan_dir(root, prog, 0)),
-        Err(_) => scan_dir(root, prog, 0),
+        Ok(p) => p.install(|| scan_dir(root, prog, 0, skip)),
+        Err(_) => scan_dir(root, prog, 0, skip),
     };
     node.name = root.display().to_string().into_boxed_str();
     node
 }
 
-fn scan_dir(path: &Path, prog: &Progress, depth: u32) -> Node {
+fn scan_dir(path: &Path, prog: &Progress, depth: u32, skip: &[PathBuf]) -> Node {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -94,7 +97,10 @@ fn scan_dir(path: &Path, prog: &Progress, depth: u32) -> Node {
                     continue;
                 }
                 if ft.is_dir() {
-                    subdirs.push(e.path());
+                    let p = e.path();
+                    if !skip.iter().any(|s| s == &p) {
+                        subdirs.push(p);
+                    }
                 } else {
                     let (size, mtime) = match e.metadata() {
                         Ok(m) => (m.len(), util::mtime_of(&m)),
@@ -124,7 +130,7 @@ fn scan_dir(path: &Path, prog: &Progress, depth: u32) -> Node {
 
     let dirs: Vec<Node> = subdirs
         .par_iter()
-        .map(|p| scan_dir(p, prog, depth + 1))
+        .map(|p| scan_dir(p, prog, depth + 1, skip))
         .collect();
 
     let mut children = dirs;
@@ -143,6 +149,23 @@ fn scan_dir(path: &Path, prog: &Progress, depth: u32) -> Node {
     node.files = count;
     node.mtime = mtime;
     node.children = children;
+    if (1..=3).contains(&depth) && node.size >= 256 * 1024 * 1024 {
+        if let Ok(mut f) = prog.found.lock() {
+            f.push((path.display().to_string(), node.size));
+            f.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            // 상위 폴더가 이미 있으면 하위 폴더는 빼서 같은 공간을 두 번 보여주지 않음
+            let mut kept: Vec<(String, u64)> = Vec::new();
+            for (p, s) in f.drain(..) {
+                if !kept.iter().any(|(k, _)| Path::new(&p).starts_with(k) || Path::new(k).starts_with(&p)) {
+                    kept.push((p, s));
+                }
+                if kept.len() >= 8 {
+                    break;
+                }
+            }
+            *f = kept;
+        }
+    }
     node
 }
 
