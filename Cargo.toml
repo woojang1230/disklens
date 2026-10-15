@@ -1,0 +1,22 @@
+[package]
+name = "disklens"
+version = "0.1.0"
+edition = "2021"
+description = "Windows 드라이브 용량 분석 및 정리 도구"
+license = "MIT"
+
+[dependencies]
+# egui 버전은 API 호환을 위해 고정합니다.
+eframe = "=0.29.1"
+rayon = "1.10"
+trash = "5"
+blake3 = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
