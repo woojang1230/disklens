@@ -462,3 +462,31 @@ pub fn compact_docker_disks(files: &[PathBuf]) -> Result<String, String> {
     }
     Ok(format!("가상 디스크를 압축해서 {}를 돌려받았어요.", util::fmt_size(freed)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protection() {
+        let p = |s: &str| is_protected(Path::new(s));
+        assert!(p(r"C:\"));
+        assert!(p(r"C:"));
+        assert!(p(r"C:\Windows"));
+        assert!(p(r"C:\Windows\System32\drivers"));
+        assert!(p(r"c:\program files (x86)\Steam"));
+        assert!(p(r"C:\pagefile.sys"));
+        assert!(p(r"C:\Users"));
+        assert!(p(r"C:\Users\kim"));
+        assert!(p(r"C:\Users\kim\AppData"));
+        assert!(p(r"C:\Users\kim\AppData\Local"));
+        assert!(p(r"\\server\share"));
+        assert!(!p(r"\\server\share\folder"));
+        assert!(!p(r"C:\Users\kim\AppData\Local\Temp"));
+        assert!(!p(r"C:\Users\kim\Downloads"));
+        assert!(!p(r"C:\Users\kim\Downloads\big.iso"));
+        assert!(!p(r"D:\Games"));
+        assert!(!p(r"C:\Windowsold"));
+        assert!(p(r"D:\"));
+    }
+}
