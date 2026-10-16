@@ -168,8 +168,9 @@ fn sunburst_depth_limit_and_thin_grouping() {
         }
     }
     assert_eq!(depth, sunburst::DEPTH);
-    let want: Vec<String> = (1..=sunburst::DEPTH).map(|d| format!("d{d}")).collect();
-    assert_eq!(n.path, base.join(want.join("/")).display().to_string());
+    // OS 구분자로 이어 붙인 경로와 비교(Windows는 \\)
+    let want: std::path::PathBuf = (1..=sunburst::DEPTH).fold(base.to_path_buf(), |p, d| p.join(format!("d{d}")));
+    assert_eq!(n.path, want.display().to_string());
 }
 
 #[test]
@@ -232,4 +233,43 @@ fn docker_reclaim_command_and_message() {
     assert_eq!(docker::reclaim_message(17 * gb, 17 * gb), "돌려받을 빈 공간이 없었어요. 지금 17.0 GB를 차지하고 있어요.");
     // 회수 중에 Docker가 더 써서 커진 경우도 '없었어요'로
     assert_eq!(docker::reclaim_message(17 * gb, 18 * gb), "돌려받을 빈 공간이 없었어요. 지금 18.0 GB를 차지하고 있어요.");
+}
+
+#[test]
+fn gui_path_adds_docker_locations() {
+    use std::path::Path;
+    // Finder에서 실행한 앱은 PATH가 /usr/bin:/bin:/usr/sbin:/sbin 뿐이라 docker를 못 찾음
+    let p = util::gui_path("/usr/bin:/bin:/usr/sbin:/sbin", Path::new("/Users/me"));
+    let parts: Vec<&str> = p.split(':').collect();
+    assert_eq!(&parts[..4], ["/usr/bin", "/bin", "/usr/sbin", "/sbin"], "원래 순서를 앞에 그대로 둠");
+    for d in ["/usr/local/bin", "/opt/homebrew/bin", "/Users/me/.docker/bin", "/Applications/Docker.app/Contents/Resources/bin"] {
+        assert!(parts.contains(&d), "{d} 빠짐: {p}");
+    }
+    // 이미 있는 경로는 다시 붙이지 않음
+    let p2 = util::gui_path("/usr/local/bin:/usr/bin", Path::new("/Users/me"));
+    assert_eq!(p2.split(':').filter(|x| *x == "/usr/local/bin").count(), 1);
+    assert!(p2.starts_with("/usr/local/bin:/usr/bin"));
+    // PATH가 비어 있어도 동작
+    assert!(util::gui_path("", Path::new("/Users/me")).starts_with("/usr/local/bin"));
+}
+
+#[test]
+fn sunburst_from_skips_big_items_and_rescales() {
+    use std::path::Path;
+    // '그 외' 펼쳐 보기: 앞의 큰 항목 2개를 건너뛰고 나머지만, 나머지 합계를 한 바퀴로
+    let root = node("root", 100_000 + 50_000 + 30 + 20 + 10, vec![
+        node("a.bin", 100_000, vec![]),
+        node("b.bin", 50_000, vec![]),
+        node("c.bin", 30, vec![]),
+        node("d.bin", 20, vec![]),
+        node("e.bin", 10, vec![]),
+    ]);
+    let all = sunburst::build_from(&root, Path::new("/r"), 0);
+    assert_eq!(all.last().unwrap().rest, 3, "전체로 보면 c·d·e는 얇아서 묶임");
+    let tail = sunburst::build_from(&root, Path::new("/r"), 2);
+    let names: Vec<&str> = tail.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["c.bin", "d.bin", "e.bin"], "나머지 60 기준이면 모두 1°보다 두꺼움");
+    assert!(tail.iter().all(|n| n.rest == 0));
+    // 범위를 넘으면 빈 목록
+    assert!(sunburst::build_from(&root, Path::new("/r"), 9).is_empty());
 }

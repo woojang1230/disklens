@@ -1,5 +1,5 @@
 'use strict';
-// 실행: node --test ui/
+// 실행: node --test ui/*.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DEPTH, sunArcs, ringRadii, arcPath, sunTransition, lerpGeom, cubicBezier } = require('./sunburst.js');
@@ -215,4 +215,15 @@ test('조각 색조는 시작 각도로 정함: 가장 큰 항목과 그 첫 자
   near(arcHue(by('big1')), angleHue(0));
   near(arcHue(by('big1a')), angleHue(0));
   near(arcHue(by('small')), angleHue(TAU * 0.99));
+});
+
+test("'그 외' 조각은 지금 보이는 범위 시작(from) + 첫 고리의 실제 조각 수 번째 항목부터 묶은 것", () => {
+  const { restStart } = require('./sunburst.js');
+  const rings = [n('a', 50, [n('a1', 50)]), n('b', 30), n('', 20, [], { rest: 4, path: '' })];
+  const arcs = sunArcs(rings, 100);
+  assert.equal(restStart(arcs, 0), 2);
+  // '그 외'를 펼친 화면(앞의 5개를 건너뜀)에서 다시 '그 외'
+  assert.equal(restStart(arcs, 5), 7);
+  // 깊은 고리의 조각은 세지 않음
+  assert.equal(restStart(sunArcs([n('x', 10, [n('x1', 5), n('x2', 5)])], 10), 3), 4);
 });

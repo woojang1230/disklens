@@ -108,4 +108,4 @@ src-tauri/
 
 OS마다 다른 부분은 `platform/` 안에만 있습니다. 맥 버전은 `other.rs`(또는 새 `mac.rs`)만 채우면 됩니다.
 
-테스트: `cd src-tauri && cargo test`
+테스트: `cd src-tauri && cargo test`, 화면 로직은 `node --test ui/*.test.js`

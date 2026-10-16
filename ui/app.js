@@ -122,7 +122,8 @@ const S = {
   folder: null,
   selected: null, // 선택한 항목 index
   viz: loadViz(), // 폴더 분석 그림: treemap | sunburst
-  sun: null, // 도넛용 고리 트리 { path, rings }
+  sun: null, // 도넛용 고리 트리 { path, from, rings }
+  restStack: [], // '그 외' 펼쳐 보기 단계: [{ from(펼친 항목이 시작하는 items 번호), name(부모 화면의 '그 외' 이름) }]
   big: null,
   bigQuery: '',
   bigCat: -1,
@@ -579,14 +580,52 @@ function itemColor(it, i) {
   return i < PAL.length ? PAL[i] : GRAY;
 }
 
+// ----- 지금 보이는 범위: 폴더 전체, 또는 '그 외'로 묶였던 항목만 펼친 화면 -----
+const viewFrom = () => (S.restStack.length ? S.restStack[S.restStack.length - 1].from : 0);
+// 펼친 화면의 구분 이름(전환 효과가 이전·다음 화면을 짝지을 때 씀). 경로에는 NUL이 없으므로 겹치지 않음
+const restKey = (path, from) => `${path}\u0000${from}`;
+const viewKey = () => (viewFrom() ? restKey(S.folder.path, viewFrom()) : S.folder.path);
+// [{ it, i }] — i는 S.folder.items 번호(선택·열기에 그대로 씀)
+const viewItems = () => S.folder.items.map((it, i) => ({ it, i })).slice(viewFrom());
+function viewSize() {
+  const f = S.folder;
+  return viewFrom() ? viewItems().reduce((s, x) => s + x.it.size, 0) + (f.moreSize || 0) : f.size;
+}
+const viewCount = () => S.folder.items.length - viewFrom() + S.folder.more;
+// 펼친 화면의 이름은 누른 '그 외' 칸의 이름 그대로(칸과 경로 표시의 숫자가 어긋나지 않게)
+const viewName = () => (S.restStack.length ? S.restStack[S.restStack.length - 1].name : baseName(S.folder.path));
+
+// 목록 색: 도넛으로 볼 때는 도넛 첫 고리와 같은 색(시작 각도 무지개, 파일은 회색)
+function rowColors() {
+  const m = new Map();
+  const total = viewSize();
+  let acc = 0;
+  viewItems().forEach(({ it, i }) => {
+    // 트리맵 색은 보이는 범위 안의 순번으로(펼친 화면에서도 앞쪽 항목이 회색이 되지 않게)
+    m.set(i, S.viz !== 'sunburst' ? itemColor(it, i - viewFrom())
+      : it.isDir ? sunColor(angleHue((acc / (total || 1)) * TAU), 1) : 'var(--sun-file)');
+    acc += it.size;
+  });
+  return m;
+}
+
 function folderHtml() {
   const f = S.folder;
-  const max = f.items.length ? f.items[0].size : 1;
+  const items = viewItems();
+  const total = viewSize();
+  const colors = rowColors();
+  const max = items.length ? items[0].it.size : 1;
+  const sep = `<span class="sep">${icon('chev', 14, 'stroke-width:2')}</span>`;
+  // '그 외'를 펼쳤으면 현재 폴더 뒤에 '그 외 N개' 단계를 붙이고, 앞 단계는 눌러서 돌아갈 수 있게
+  const steps = S.restStack.map((st, k) => {
+    const label = st.name;
+    return k === S.restStack.length - 1 ? `<span class="here">${esc(label)}</span>` : `<button type="button" data-a="restTo" data-v="${k + 1}">${esc(label)}</button>${sep}`;
+  }).join('');
   const crumbs = f.crumbs.map((c, i) => i === f.crumbs.length - 1
-    ? `<span class="here">${esc(c.name)}</span>`
-    : `<button type="button" data-a="open" data-v="${esc(c.path)}">${esc(c.name)}</button><span class="sep">${icon('chev', 14, 'stroke-width:2')}</span>`).join('');
-  const rows = f.items.map((it, i) => {
-    const color = itemColor(it, i);
+    ? (steps ? `<button type="button" data-a="restTo" data-v="0">${esc(c.name)}</button>${sep}${steps}` : `<span class="here">${esc(c.name)}</span>`)
+    : `<button type="button" data-a="open" data-v="${esc(c.path)}">${esc(c.name)}</button>${sep}`).join('');
+  const rows = items.map(({ it, i }) => {
+    const color = colors.get(i);
     const meta = it.isDir
       ? `${it.dirs ? `폴더 ${fmtCount(it.dirs)} · ` : ''}파일 ${fmtCount(it.files)}`
       : fmtDate(it.mtime);
@@ -595,16 +634,16 @@ function folderHtml() {
         ${it.isDir ? folderIcon(color) : fileIcon(color)}
         <span class="name"><b>${esc(it.name)}</b><small>${meta}</small></span>
         <span class="size num">${fmtSize(it.size)}</span>
-        <span class="ratio"><span class="track"><span style="width:${pct(it.size, max)}%;background:${color}"></span></span><small class="num">${pct(it.size, f.size).toFixed(1)}%</small></span>
+        <span class="ratio"><span class="track"><span style="width:${pct(it.size, max)}%;background:${color}"></span></span><small class="num">${pct(it.size, total).toFixed(1)}%</small></span>
       </button>`;
   }).join('');
   const more = f.more > 0 ? `<div class="row more"><span style="width:20px"></span><span class="name"><b>그 외 ${fmtCount(f.more)}개 항목</b></span><span class="size num">${fmtSize(f.moreSize)}</span><span class="ratio"></span></div>` : '';
   return `
       <div class="card clip" style="flex:1;display:flex;flex-direction:column;min-height:560px">
         <div class="card-bar top">
-          <button type="button" class="icon-btn" aria-label="상위 폴더로" data-a="up"${f.crumbs.length > 1 ? '' : ' disabled'}>${icon('up', 16, 'stroke-width:2')}</button>
+          <button type="button" class="icon-btn" aria-label="상위 폴더로" data-a="up"${f.crumbs.length > 1 || S.restStack.length ? '' : ' disabled'}>${icon('up', 16, 'stroke-width:2')}</button>
           <nav class="crumbs" aria-label="현재 위치">${crumbs}</nav>
-          <span class="sub" style="margin-left:auto">${fmtSize(f.size)} · 항목 ${fmtCount(f.items.length + f.more)}개 · 파일 ${fmtCount(f.files)}개</span>
+          <span class="sub" style="margin-left:auto">${viewFrom() ? `${fmtSize(total)} · 항목 ${fmtCount(viewCount())}개` : `${fmtSize(f.size)} · 항목 ${fmtCount(f.items.length + f.more)}개 · 파일 ${fmtCount(f.files)}개`}</span>
           <div class="seg" role="group" aria-label="그림 방식">
             <button type="button" class="${S.viz === 'treemap' ? 'on' : ''}" aria-pressed="${S.viz === 'treemap'}" data-a="viz" data-v="treemap">트리맵</button>
             <button type="button" class="${S.viz === 'sunburst' ? 'on' : ''}" aria-pressed="${S.viz === 'sunburst'}" data-a="viz" data-v="sunburst">도넛</button>
@@ -627,7 +666,7 @@ function selectionBar() {
     return `<div class="card-bar bottom sel-bar"><span class="sub">항목을 클릭하면 여기서 열거나 지울 수 있어요 · 더블클릭: 폴더 열기 · Backspace: 상위 폴더</span></div>`;
   }
   const it = S.folder.items[S.selected];
-  const color = itemColor(it, S.selected);
+  const color = rowColors().get(S.selected) || itemColor(it, S.selected);
   const meta = it.isDir ? `${fmtSize(it.size)} · 파일 ${fmtCount(it.files)}개 · 마지막 수정 ${fmtDate(it.mtime)}` : `${fmtSize(it.size)} · 수정 ${fmtDate(it.mtime)}`;
   return `
     <div class="card-bar bottom sel-bar">
@@ -669,15 +708,28 @@ function watchTreemap(box) {
   treemapBox = box;
 }
 
+// 트리맵 칸이 놓이는 상자: 현재 폴더를 나타내는 틀(.tm-frame) 안쪽
+const tmBox = () => document.querySelector('#treemap > .tm-frame > .tm-inner');
+
 function drawTreemap() {
-  const box = document.getElementById('treemap');
-  if (!box || !S.folder) return;
-  watchTreemap(box);
+  const outer = document.getElementById('treemap');
+  if (!outer || !S.folder) return;
+  watchTreemap(outer);
+  treemapSize = `${outer.clientWidth}x${outer.clientHeight}`;
+  // 칸 전체를 현재 폴더 틀로 감쌈: 위에 폴더 이름·크기, 그 안에 하위 항목 칸
+  if (!tmBox()) {
+    stopTreemapAnim();
+    tmLast = null;
+    outer.innerHTML = '<div class="tm-frame"><div class="tm-head"></div><div class="tm-inner"></div></div>';
+  }
+  const headHtml = `<b>${esc(viewName())}</b><small class="num">${fmtSize(viewSize())}</small>`;
+  const headEl = outer.querySelector('.tm-head');
+  if (headEl.innerHTML !== headHtml) headEl.innerHTML = headHtml;
+  const box = tmBox();
   const W = box.clientWidth, H = box.clientHeight;
-  treemapSize = `${W}x${H}`;
   if (W <= 0 || H <= 0) return;
   const f = S.folder;
-  const list = f.items.map((it, i) => ({ it, i })).filter((x) => x.it.size > 0).sort((a, b) => b.it.size - a.it.size);
+  const list = viewItems().filter((x) => x.it.size > 0).sort((a, b) => b.it.size - a.it.size);
   const head = list.slice(0, TILE_MAX_ITEMS);
   const extra = list.slice(TILE_MAX_ITEMS).reduce((s, x) => s + x.it.size, 0) + (f.moreSize || 0);
   const rects = fitLayout(head.map((x) => x.it.size), W, H, TILE_MIN[0], TILE_MIN[1], extra);
@@ -686,12 +738,14 @@ function drawTreemap() {
   const layout = []; // 전환 효과용: 칸과 미리 보이는 하위 칸의 박스 기준 위치
   const restCount = list.length - shown + (f.more || 0);
   const restSize = list.slice(shown).reduce((s, y) => s + y.it.size, 0) + (f.moreSize || 0);
+  // '그 외' 칸을 누르면 묶인 항목만 펼쳐 봄. 목록에 없는 항목(300개 넘는 꼬리)만 묶였으면 펼칠 것이 없음
+  const restFrom = shown < list.length ? list[shown].i : -1;
   tiles = [];
   let html = '';
   rects.forEach((r) => {
     const x = r.index >= 0 ? head[r.index] : null;
     const isRest = !x;
-    const color = isRest ? GRAY : itemColor(x.it, x.i);
+    const color = isRest ? GRAY : itemColor(x.it, x.i - viewFrom());
     const frame = `color-mix(in srgb, ${color} 55%, var(--surface))`;
     const name = isRest ? `그 외 ${fmtCount(restCount)}개` : x.it.name;
     const size = isRest ? restSize : x.it.size;
@@ -725,9 +779,10 @@ function drawTreemap() {
     if (kidsHtml) inner += `<div class="kids">${kidsHtml}</div>`;
     layout.push({ name, x: r.x, y: r.y, w: r.w, h: r.h, kids: kidRects });
     const sel = !isRest && S.selected === x.i;
-    html += `<div class="tile${sel ? ' sel' : ''}" data-tile="${tiles.length - 1}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${kidsHtml ? frame : color}"${isRest ? '' : ` data-a="tile" data-v="${x.i}"`}>${inner}</div>`;
+    const act = !isRest ? ` data-a="tile" data-v="${x.i}"` : restFrom >= 0 ? ` data-a="restIn" data-v="${restFrom}"` : '';
+    html += `<div class="tile${sel ? ' sel' : ''}${act ? '' : ' inert'}" data-tile="${tiles.length - 1}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${kidsHtml ? frame : color}"${act}>${inner}</div>`;
   });
-  paintTreemap(box, html, { path: f.path, W, H, tiles: layout });
+  paintTreemap(box, html, { path: viewKey(), W, H, tiles: layout });
 }
 
 // ----- 트리맵 전환 효과 -----
@@ -751,7 +806,7 @@ function stopTreemapAnim() {
   clearTimeout(tmTimer);
   tmTimer = 0;
   tmRedraw = false;
-  const box = document.getElementById('treemap');
+  const box = tmBox();
   if (!box) return;
   tmAnims.forEach((a) => a.cancel());
   tmAnims = [];
@@ -817,7 +872,7 @@ function showTip(e) {
   if (!t) { tip.innerHTML = ''; return; }
   const d = tiles[Number(t.dataset.tile)];
   if (!d || !S.folder) return;
-  const share = pct(d.size, S.folder.size).toFixed(1);
+  const share = pct(d.size, viewSize()).toFixed(1);
   const x = Math.min(e.clientX + 14, window.innerWidth - 260);
   const y = Math.min(e.clientY + 16, window.innerHeight - 90);
   tip.innerHTML = `<div class="tip" style="left:${x}px;top:${y}px"><b>${esc(d.name)}</b><span class="num">${fmtSize(d.size)} · 이 폴더의 ${share}%</span>${d.isDir ? '<small>클릭해서 열기</small>' : ''}</div>`;
@@ -854,16 +909,22 @@ function stopSunAnim() {
   if (old) old.remove();
 }
 
-// 트리맵에서 도넛으로 바꾼 직후처럼 고리 트리가 없으면 받아 옴
-async function ensureSun() {
-  const path = S.folder.path;
-  if (sunWant === path) return;
-  sunWant = path;
+// 지금 보이는 범위의 고리 트리가 없으면 받아 옴(트리맵에서 바꾼 직후, '그 외'를 펼치거나 접을 때)
+const sunReady = () => S.sun && S.folder && S.sun.path === S.folder.path && S.sun.from === viewFrom();
+async function loadSunView() {
+  if (sunReady()) return;
+  const path = S.folder.path, from = viewFrom();
   let rings = null;
-  try { rings = await invoke('sunburst', { path }); } catch (e) { toast(errMsg(e)); }
-  sunWant = '';
+  try { rings = await invoke('sunburst', { path, from }); } catch (e) { toast(errMsg(e)); }
   // 못 받았으면 빈 도넛으로 둠(다시 그릴 때마다 또 요청하지 않게)
-  if (S.folder && S.folder.path === path) S.sun = { path, rings: rings || [] };
+  if (S.folder && S.folder.path === path && viewFrom() === from) S.sun = { path, from, rings: rings || [] };
+}
+async function ensureSun() {
+  const want = viewKey();
+  if (sunWant === want) return;
+  sunWant = want;
+  await loadSunView();
+  sunWant = '';
   render();
 }
 
@@ -873,14 +934,20 @@ function sunPathsHtml(arcs, geo) {
   return arcs.map((a, i) => {
     const g = geo(a, i);
     const fill = a.node.rest ? 'var(--sun-rest)' : !a.node.isDir ? 'var(--sun-file)' : sunColor(arcHue(a), a.depth);
-    return `<path d="${arcPath(g.cx, g.cy, g.r0, g.r1, g.a0, g.a1)}" fill="${fill}" data-sun="${i}"${a.node.rest ? '' : ` data-a="sun" data-v="${i}"`}${a.node.rest ? ' class="rest"' : ''}/>`;
+    // '그 외' 조각: 첫 고리는 묶인 항목 펼쳐 보기, 깊은 고리는 그 부모 폴더 열기(펼칠 것이 없으면 누를 수 없음)
+    const act = !a.node.rest || a.restFrom >= 0 || a.depth > 1;
+    return `<path d="${arcPath(g.cx, g.cy, g.r0, g.r1, g.a0, g.a1)}" fill="${fill}" data-sun="${i}"${act ? ` data-a="sun" data-v="${i}"` : ' class="rest"'}/>`;
   }).join('');
 }
 
 // 가운데 글자: 지금 폴더의 전체 크기(크게)와 이름
 function sunCenterHtml() {
-  const f = S.folder;
-  return `<b class="num">${fmtSize(f.size)}</b><small>${esc(baseName(f.path))}</small>`;
+  return `<b class="num">${fmtSize(viewSize())}</b><small>${esc(viewName())}</small>`;
+}
+
+// 깊은 고리 조각의 부모 조각: 한 단계 안쪽에서 시작 각도를 품은 조각
+function sunParent(a) {
+  return sunLast.arcs.find((p) => p.depth === a.depth - 1 && p.a0 <= a.a0 + 1e-9 && a.a0 < p.a1 - 1e-9) || null;
 }
 
 // 오른쪽 위 정보: 마우스를 올린 조각(또는 목록 줄)의 종류·이름·크기. 이름은 자르지 않고 줄을 바꿈
@@ -888,9 +955,11 @@ function sunInfoHtml(a) {
   const f = S.folder;
   const kind = a.node.rest ? '묶음' : a.node.isDir ? '폴더' : '파일';
   const name = a.node.rest ? `그 외 ${fmtCount(a.node.rest)}개` : a.node.name;
-  const hint = a.node.rest ? '작은 항목을 모아 둔 조각' : a.node.isDir ? '클릭해서 열기' : `클릭하면 ${esc(S.info.fileManager)}에서 보기`;
+  const parent = a.node.rest && a.depth > 1 ? sunParent(a) : null;
+  const hint = !a.node.rest ? (a.node.isDir ? '클릭해서 열기' : `클릭하면 ${esc(S.info.fileManager)}에서 보기`)
+    : a.restFrom >= 0 ? '클릭해서 펼쳐 보기' : parent ? `클릭하면 ${esc(parent.node.name)} 폴더 열기` : '작은 항목을 모아 둔 조각';
   return `<span class="kind ${a.node.rest ? 'rest' : a.node.isDir ? 'dir' : 'file'}">${kind}</span>`
-    + `<b>${esc(name)}</b><span class="num">${fmtSize(a.node.size)} · 이 폴더의 ${pct(a.node.size, f.size).toFixed(1)}%</span><small>${hint}</small>`;
+    + `<b>${esc(name)}</b><span class="num">${fmtSize(a.node.size)} · 이 폴더의 ${pct(a.node.size, viewSize()).toFixed(1)}%</span><small>${hint}</small>`;
 }
 
 // 조각 i의 경로를 들린 양 v만큼 넓혀 다시 그림
@@ -1007,18 +1076,28 @@ function drawSunburst() {
   tmLast = null;
   tmNext = null;
   const f = S.folder;
-  if (!S.sun || S.sun.path !== f.path) {
+  if (!sunReady()) {
     if (!box.querySelector('.spinner')) box.innerHTML = '<div class="empty" style="height:100%"><div class="spinner"></div></div>';
     ensureSun();
     return;
   }
-  const key = `${f.path}|${W}x${H}|${f.size}`;
+  const key = `${viewKey()}|${W}x${H}|${f.size}`;
   // 같은 폴더·같은 크기면 선택 표시만 고침(조각을 다시 만들지 않음)
   if (sunLast && sunLast.box === box && sunLast.key === key && box.querySelector('.sun-new')) {
     sunMarkSelected();
     return;
   }
-  const arcs = sunArcs(S.sun.rings, f.size);
+  const arcs = sunArcs(S.sun.rings, viewSize());
+  // 첫 고리의 '그 외' 조각: 묶인 항목이 목록에 있으면 펼쳐 볼 수 있게 화면 이름(restKey)을 붙임.
+  // 펼친 화면과 이 조각을 이름으로 짝지어 들어가기·나오기 전환이 이어짐
+  const rs = restStart(arcs, viewFrom());
+  arcs.forEach((a) => {
+    a.restFrom = -1;
+    if (a.depth === 1 && a.node.rest && rs < f.items.length && f.items[rs].size > 0) {
+      a.restFrom = rs;
+      a.node = { ...a.node, path: restKey(f.path, rs) };
+    }
+  });
   if (!arcs.length) {
     stopSunAnim();
     sunLast = null;
@@ -1029,7 +1108,7 @@ function drawSunburst() {
   const rr = ringRadii(Math.max(40, Math.min(W, H) / 2 - 8));
   const at = (g) => ({ cx, cy, r0: rr.at(g.l0), r1: rr.at(g.l0 + 1), a0: g.a0, a1: g.a1 });
   const prev = sunLast && sunLast.box === box && sunLast.W === W && sunLast.H === H ? sunLast : null;
-  const next = { box, key, path: f.path, W, H, arcs, cx, cy, rr };
+  const next = { box, key, path: viewKey(), W, H, arcs, cx, cy, rr };
   const plan = prev && !(reduceMotion && reduceMotion.matches) ? sunTransition(prev, next) : null;
   setSunHot(-1); // 강조 조각을 제자리 층으로 돌린 뒤 이전 도넛을 넘겨받음
   const oldLayer = plan ? box.querySelector('.sun-new') : null;
@@ -1492,7 +1571,7 @@ async function loadFolder(path) {
       invoke('folder', { path: path || null }),
       S.viz === 'sunburst' ? invoke('sunburst', { path: path || null }) : null,
     ]);
-    if (f) { S.folder = f; S.selected = null; S.sun = rings ? { path: f.path, rings } : null; }
+    if (f) { S.folder = f; S.selected = null; S.restStack = []; S.sun = rings ? { path: f.path, from: 0, rings } : null; }
   } catch (e) { toast(errMsg(e)); }
 }
 async function afterScan() {
@@ -1688,8 +1767,39 @@ const A = {
   // 도넛 조각: 폴더는 들어가고, 파일은 파일 관리자에서 보여 줌('그 외' 조각은 아무 일도 하지 않음)
   async sun(v) {
     const a = sunLast && sunLast.arcs[Number(v)];
-    if (!a || a.node.rest) return;
+    if (!a) return;
+    if (a.node.rest) {
+      if (a.restFrom >= 0) { await A.restIn(a.restFrom, null, null, `그 외 ${fmtCount(a.node.rest)}개`); return; }
+      const p = a.depth > 1 ? sunParent(a) : null;
+      if (p) { await loadFolder(p.node.path); render(); }
+      return;
+    }
     if (a.node.isDir) { await loadFolder(a.node.path); render(); } else invoke('reveal', { path: a.node.path });
+  },
+  // '그 외'로 묶인 항목만 펼쳐 봄(v: 묶인 항목이 시작하는 items 번호)
+  async restIn(v, el, _e, label) {
+    const from = Number(v);
+    if (!S.folder || !(from > viewFrom()) || from >= S.folder.items.length) return;
+    const t = el && el.dataset.tile ? tiles[Number(el.dataset.tile)] : null;
+    const name = label || (t ? t.name : '그 외');
+    S.restStack.push({ from, name });
+    S.selected = null;
+    document.getElementById('tip').innerHTML = ''; // 누른 칸의 툴팁이 남지 않게
+    if (S.viz === 'treemap') planTreemap('in', name, viewKey());
+    else await loadSunView();
+    render();
+  },
+  // 펼쳐 보기 단계 v로 돌아감(0이면 폴더 전체)
+  async restTo(v) {
+    const lv = Number(v);
+    if (!S.folder || !(lv >= 0) || lv >= S.restStack.length) return;
+    const leaving = S.restStack[lv];
+    S.restStack.length = lv;
+    S.selected = null;
+    document.getElementById('tip').innerHTML = '';
+    if (S.viz === 'treemap') planTreemap('out', leaving.name, viewKey());
+    else await loadSunView();
+    render();
   },
   async open(path) {
     // 경로 표시 줄에서 상위 폴더로 갈 때: 지금 위치로 이어지는 바로 아래 칸으로 줄어듦
@@ -1700,6 +1810,7 @@ const A = {
     render();
   },
   async up() {
+    if (S.restStack.length) { await A.restTo(S.restStack.length - 1); return; }
     if (!S.folder || S.folder.crumbs.length < 2) return;
     const c = S.folder.crumbs;
     planTreemap('out', c[c.length - 1].name, c[c.length - 2].path);

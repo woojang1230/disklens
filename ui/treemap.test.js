@@ -1,5 +1,5 @@
 'use strict';
-// 실행: node --test ui/
+// 실행: node --test ui/*.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { fitLayout } = require('./treemap.js');

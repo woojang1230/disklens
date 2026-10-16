@@ -28,16 +28,25 @@ pub struct SunNode {
 }
 
 /// node(경로 path)의 자식들을 고리 트리로 만듭니다.
+#[cfg(test)]
 pub fn build(node: &Node, path: &Path) -> Vec<SunNode> {
-    ring(node, path, node.size, 1)
+    build_from(node, path, 0)
 }
 
-fn ring(node: &Node, path: &Path, total: u64, depth: usize) -> Vec<SunNode> {
+/// 앞의 큰 자식 from개를 건너뛰고 나머지만 고리 트리로 만듭니다('그 외' 펼쳐 보기).
+/// 얇은 조각의 기준은 나머지 합계입니다.
+pub fn build_from(node: &Node, path: &Path, from: usize) -> Vec<SunNode> {
+    let kids = node.children.get(from..).unwrap_or(&[]);
+    let total = kids.iter().map(|c| c.size).sum();
+    ring(kids, path, total, 1)
+}
+
+fn ring(children: &[Node], path: &Path, total: u64, depth: usize) -> Vec<SunNode> {
     let thick = |s: u64| s as u128 * SLICES >= total as u128;
     let mut out = Vec::new();
     let (mut rest_size, mut rest_count) = (0u64, 0u64);
     // children은 크기 내림차순이라 얇은 항목은 끝에 몰려 있음
-    for c in node.children.iter().filter(|c| c.size > 0) {
+    for c in children.iter().filter(|c| c.size > 0) {
         if !thick(c.size) {
             rest_size += c.size;
             rest_count += 1;
@@ -45,7 +54,7 @@ fn ring(node: &Node, path: &Path, total: u64, depth: usize) -> Vec<SunNode> {
         }
         let p = path.join(&*c.name);
         let children = if c.is_dir && depth < DEPTH {
-            ring(c, &p, total, depth + 1)
+            ring(&c.children, &p, total, depth + 1)
         } else {
             Vec::new()
         };

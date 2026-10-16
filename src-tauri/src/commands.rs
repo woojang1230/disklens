@@ -398,8 +398,13 @@ pub async fn folder(state: State<'_, AppState>, path: Option<String>) -> Res<Opt
 }
 
 /// 도넛 보기용: 폴더 아래 sunburst::DEPTH 단계까지의 고리 트리. path가 없으면 스캔 루트.
+/// from이 있으면 앞의 큰 항목 from개를 건너뛴 나머지만('그 외' 펼쳐 보기).
 #[tauri::command]
-pub async fn sunburst(state: State<'_, AppState>, path: Option<String>) -> Res<Option<Vec<sunburst::SunNode>>> {
+pub async fn sunburst(
+    state: State<'_, AppState>,
+    path: Option<String>,
+    from: Option<usize>,
+) -> Res<Option<Vec<sunburst::SunNode>>> {
     let inner = state.0.clone();
     blocking(move || {
         let guard = inner.scan.lock().ok()?;
@@ -407,7 +412,7 @@ pub async fn sunburst(state: State<'_, AppState>, path: Option<String>) -> Res<O
         let target = path.map(PathBuf::from).unwrap_or_else(|| d.root_path.clone());
         let nav = scan::find_nav(&d.root, &d.root_path, &target).unwrap_or_default();
         let here = scan::path_of(&d.root_path, &d.root, &nav);
-        Some(sunburst::build(scan::node_at(&d.root, &nav), &here))
+        Some(sunburst::build_from(scan::node_at(&d.root, &nav), &here, from.unwrap_or(0)))
     })
     .await
 }

@@ -24,6 +24,12 @@ function sunArcs(rings, total) {
   return out;
 }
 
+// 첫 고리의 '그 외' 조각이 묶은 항목이 목록의 몇 번째부터인지.
+// 백엔드는 큰 순서로 두꺼운 항목을 먼저 넣고 얇은 항목을 끝에 묶으므로 = from + 첫 고리의 실제 조각 수
+function restStart(arcs, from) {
+  return from + arcs.filter((a) => a.depth === 1 && !a.node.rest).length;
+}
+
 // 바깥 반지름 R 안의 고리 크기: 가운데 구멍(지금 폴더 정보 자리) + 같은 두께의 고리 SUN_DEPTH개
 function ringRadii(R) {
   const hole = R * 0.2;
@@ -135,5 +141,5 @@ function cubicBezier(x1, y1, x2, y2) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { DEPTH: SUN_DEPTH, sunArcs, ringRadii, arcPath, sunTransition, lerpGeom, cubicBezier, angleHue, arcHue, sunColor, liftRadii };
+  module.exports = { DEPTH: SUN_DEPTH, sunArcs, ringRadii, arcPath, sunTransition, lerpGeom, cubicBezier, angleHue, arcHue, sunColor, liftRadii, restStart };
 }
