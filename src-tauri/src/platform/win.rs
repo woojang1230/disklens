@@ -14,6 +14,17 @@ pub const FILE_MANAGER: &str = "탐색기";
 /// Docker 가상 디스크를 이 앱에서 압축할 수 있는지
 pub const DOCKER_COMPACT: bool = true;
 
+/// 지금 스레드의 우선순위를 한 단계 낮춥니다. 스캔·해시 같은 무거운 작업 스레드에서 불러,
+/// 작업이 CPU를 다 써도 화면(WebView)이 먼저 돌게 합니다.
+pub fn lower_thread_priority() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+}
+
 fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -235,7 +246,7 @@ pub fn cleanup_categories() -> Vec<Category> {
     v.push(Category::new(
         "recycle",
         "휴지통",
-        "모든 드라이브의 휴지통 비우기",
+        "이 드라이브의 휴지통 비우기",
         "trash",
         Mode::Permanent,
         true,
@@ -338,21 +349,26 @@ fn chromium_caches(user_data: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-pub fn recycle_bin_size() -> u64 {
+/// 휴지통 크기. `root`를 주면 그 드라이브의 휴지통만.
+pub fn recycle_bin_size(root: Option<&Path>) -> u64 {
     list_drives()
         .iter()
+        .filter(|d| crate::cleanup::on_drive(&d.root, root))
         .map(|d| dir_size(&d.root.join("$Recycle.Bin")).0)
         .sum()
 }
 
-pub fn empty_recycle_bin() -> Result<(), String> {
+/// 휴지통 비우기. `root`를 주면 그 드라이브의 휴지통만 비웁니다.
+pub fn empty_recycle_bin(root: Option<&Path>) -> Result<(), String> {
+    let letter = root
+        .and_then(|r| r.to_string_lossy().chars().next())
+        .filter(|c| c.is_ascii_alphabetic());
+    let cmd = match letter {
+        Some(l) => format!("Clear-RecycleBin -DriveLetter {} -Force -ErrorAction SilentlyContinue", l),
+        None => "Clear-RecycleBin -Force -ErrorAction SilentlyContinue".to_string(),
+    };
     let out = hidden_command("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Clear-RecycleBin -Force -ErrorAction SilentlyContinue",
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
         .output();
     match out {
         Ok(o) if o.status.success() => Ok(()),

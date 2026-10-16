@@ -53,6 +53,8 @@ const ICONS = {
   hammer: 'M14 6l4 4M4 20l9-9M15 3l6 6-3 3-6-6z',
   database: 'M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3',
   stop: 'M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z',
+  apps: 'M5 4h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM15 4h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM5 14h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zM15 14h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1z',
+  back: 'M15 6l-6 6 6 6',
 };
 const CLEAN_TINT = { clock: '#8DBDF0', window: '#8FA8FF', globe: '#7FD1B9', trash: '#C6C9D0', alert: '#F2C76B', code: '#B4D58A', download: '#C9B3F5', 'folder-clock': '#F2A07B' };
 const DOCKER_ICON = { Images: ['layers', '#8FA8FF'], 'Build Cache': ['hammer', '#F2C76B'], Containers: ['docker', '#7FD1B9'], 'Local Volumes': ['database', '#E79A9A'] };
@@ -106,53 +108,29 @@ function fmtAgo(ts) {
 const pct = (a, b) => (b > 0 ? (a / b) * 100 : 0);
 const baseName = (p) => String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
-function squarify(vals, W, H) {
-  const total = vals.reduce((a, b) => a + b, 0);
-  if (!vals.length || total <= 0 || W <= 0 || H <= 0) return vals.map(() => ({ x: 0, y: 0, w: 0, h: 0 }));
-  const a = vals.map((v) => (v * W * H) / total);
-  const out = [];
-  let x = 0, y = 0, w = W, h = H, i = 0;
-  const worst = (r, s) => {
-    const sum = r.reduce((p, q) => p + q, 0);
-    return Math.max((s * s * Math.max(...r)) / (sum * sum), (sum * sum) / (s * s * Math.min(...r)));
-  };
-  while (i < a.length) {
-    const s = Math.min(w, h);
-    let e = i + 1;
-    while (e < a.length && worst(a.slice(i, e + 1), s) <= worst(a.slice(i, e), s)) e++;
-    const sum = a.slice(i, e).reduce((p, q) => p + q, 0);
-    if (w >= h) {
-      const cw = sum / h; let cy = y;
-      for (let k = i; k < e; k++) { const ch = a[k] / cw; out.push({ x, y: cy, w: cw, h: ch }); cy += ch; }
-      x += cw; w -= cw;
-    } else {
-      const rh = sum / w; let cx = x;
-      for (let k = i; k < e; k++) { const c = a[k] / rh; out.push({ x: cx, y, w: c, h: rh }); cx += c; }
-      y += rh; h -= rh;
-    }
-    i = e;
-  }
-  return out;
-}
-
 // ---------- 상태 ----------
 
 const S = {
   info: { os: 'windows', fileManager: '탐색기', dockerCompact: true },
   drives: [],
   drive: null, // 선택한 드라이브 root
-  view: 'start',
+  view: 'home', // home | drives | drive | programs | docker
+  tab: 'folders', // 드라이브 작업 공간의 탭: folders | big | types | cleanup | dups
   scan: null, // { root, progress }
   summary: null,
   scannedAt: 0,
   folder: null,
   selected: null, // 선택한 항목 index
+  viz: loadViz(), // 폴더 분석 그림: treemap | sunburst
+  sun: null, // 도넛용 고리 트리 { path, rings }
   big: null,
   bigQuery: '',
   bigCat: -1,
   bigChecked: new Set(),
   cleanup: null,
+  cleanupRoot: null, // 정리 추천을 분석한 드라이브
   cleanupLoading: false,
+  cleanupAt: 0, // 정리 추천을 마지막으로 분석한 시각
   cleanChecked: null,
   cleanOpen: null,
   dups: null,
@@ -170,6 +148,10 @@ const S = {
   busy: '',
 };
 
+function loadViz() {
+  try { return localStorage.getItem('disklens.viz') === 'sunburst' ? 'sunburst' : 'treemap'; } catch (e) { return 'treemap'; }
+}
+
 function driveOf(path) {
   if (!path) return null;
   const p = S.info.os === 'windows' ? path.toLowerCase() : path;
@@ -179,6 +161,21 @@ function driveOf(path) {
     if (p.startsWith(r) && (!best || r.length > best.root.length)) best = d;
   }
   return best;
+}
+// 지금 스캔했거나 스캔 중인 대상 (드라이브 또는 폴더)
+function workspace() {
+  const root = S.scan ? S.scan.root : S.summary ? S.summary.root : null;
+  if (!root) return null;
+  const d = driveOf(root);
+  const folder = !isDriveRoot(root);
+  return { root, drive: d, driveRoot: d ? d.root : root, folder, name: folder ? baseName(root) : (d ? d.name : root) };
+}
+function scanPct() {
+  const p = S.scan && S.scan.progress;
+  const d = S.scan && driveOf(S.scan.root);
+  if (!p || !d || !isDriveRoot(S.scan.root)) return null;
+  const used = d.total - d.free;
+  return used > 0 ? Math.min(99, pct(p.bytes, used)) : null;
 }
 const currentDrive = () => (S.scan ? driveOf(S.scan.root) : S.summary ? driveOf(S.summary.root) : null) || S.drives.find((d) => d.root === S.drive) || S.drives[0] || null;
 const isDriveRoot = (path) => S.drives.some((d) => d.root.toLowerCase() === String(path).toLowerCase());
@@ -196,81 +193,115 @@ function errMsg(e) { return typeof e === 'string' ? e : (e && e.message) || Stri
 
 // ---------- 그리기 ----------
 
+// 새 HTML과 비교해 달라진 노드만 고칩니다. 그대로인 요소(스피너, 진행 막대, 스크롤 영역)는
+// 다시 만들지 않으므로 애니메이션·전환 효과·스크롤·포커스가 끊기지 않습니다.
+function morph(el, html) {
+  const next = document.createElement(el.tagName);
+  next.innerHTML = html;
+  morphChildren(el, next);
+}
+function morphChildren(from, to) {
+  const a = Array.from(from.childNodes);
+  const b = Array.from(to.childNodes);
+  b.forEach((n, i) => {
+    const o = a[i];
+    if (!o) from.appendChild(n);
+    else if (o.nodeType === n.nodeType && o.nodeName === n.nodeName) morphNode(o, n);
+    else from.replaceChild(n, o);
+  });
+  for (let i = b.length; i < a.length; i++) from.removeChild(a[i]);
+}
+function morphNode(o, n) {
+  if (o.nodeType !== 1) {
+    if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue;
+    return;
+  }
+  const wasOwn = o.hasAttribute('data-own');
+  for (const { name } of Array.from(o.attributes)) if (!n.hasAttribute(name)) o.removeAttribute(name);
+  for (const { name, value } of Array.from(n.attributes)) if (o.getAttribute(name) !== value) o.setAttribute(name, value);
+  // 입력 요소는 속성이 아니라 현재 값이 화면에 보이므로 값도 맞춤
+  if (o.nodeName === 'INPUT') {
+    if (o.type === 'checkbox') o.checked = n.hasAttribute('checked');
+    else if (o.value !== (n.getAttribute('value') || '')) o.value = n.getAttribute('value') || '';
+  }
+  // 트리맵처럼 내용을 따로 그리는 요소는 건드리지 않음. 다른 요소 자리를 물려받았으면 비워 둠
+  if (n.hasAttribute('data-own')) {
+    if (!wasOwn) o.textContent = '';
+    return;
+  }
+  morphChildren(o, n);
+  if (o.nodeName === 'SELECT') {
+    const i = Array.from(n.options).findIndex((op) => op.hasAttribute('selected'));
+    if (i >= 0 && o.selectedIndex !== i) o.selectedIndex = i;
+  }
+}
+
+// 진행 이벤트처럼 자주 오는 갱신은 한 프레임에 한 번만 그림
+let renderFrame = 0;
+function scheduleRender() {
+  if (!renderFrame) renderFrame = requestAnimationFrame(() => { renderFrame = 0; render(); });
+}
+
 function render() {
+  if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
   const ae = document.activeElement;
   const keepId = ae && ae.id;
   const pos = ae && typeof ae.selectionStart === 'number' ? ae.selectionStart : null;
-  document.getElementById('sidebar').innerHTML = sidebarHtml();
-  const main = document.getElementById('main');
-  const top = main.scrollTop;
-  main.innerHTML = mainHtml();
-  main.scrollTop = top;
-  document.getElementById('modal').innerHTML = modalHtml();
-  if (keepId) {
+  morph(document.getElementById('sidebar'), sidebarHtml());
+  morph(document.getElementById('main'), mainHtml());
+  morph(document.getElementById('modal'), modalHtml());
+  if (keepId && document.activeElement !== ae) {
     const el = document.getElementById(keepId);
     if (el) { el.focus(); if (pos !== null && el.setSelectionRange) el.setSelectionRange(pos, pos); }
   }
-  if (S.view === 'folders' && S.folder && !S.scan) drawTreemap();
+  if (S.view === 'drive' && S.tab === 'folders' && S.folder && !S.scan) drawViz();
+  spinner.kick();
 }
 
+// 스피너 회전(spinner.js). 그리기가 끝날 때마다 새 스피너에 각도를 넣고 루프를 켬
+const spinners = document.getElementsByClassName('spinner');
+const spinner = spinnerDriver({ raf: (fn) => requestAnimationFrame(fn), now: () => performance.now(), list: () => spinners });
+
 function sidebarHtml() {
-  const navItem = (v, ic, label, badge) => `
-    <button type="button" class="nav${S.view === v ? ' on' : ''}" data-a="nav" data-v="${v}">
-      ${icon(ic)}<span class="grow">${label}</span>${badge ? `<span class="badge">${badge}</span>` : ''}
-    </button>`;
-  const cleanBadge = S.cleanup && S.cleanChecked ? sumClean().freed : 0;
-  const dupBadge = S.dups ? S.dups.reduce((s, g) => s + g.size * (g.files.length - 1), 0) : 0;
-  const dockerBadge = S.docker && !S.docker.error && S.dockerChecked ? S.docker.rows.filter((r) => S.dockerChecked.has(r.kind)).reduce((s, r) => s + r.reclaimBytes, 0) : 0;
-  const drives = S.drives.map((d) => {
-    const used = d.total - d.free;
-    const p = Math.round(pct(used, d.total));
-    const hot = p >= 85;
-    const on = currentDrive() && currentDrive().root === d.root;
-    return `
-      <button type="button" class="drive${on ? ' on' : ''}" data-a="drive" data-v="${esc(d.root)}">
-        <span class="drive-top">${icon('drive', 16)}<span class="name ellipsis">${esc(d.name)}</span><span class="pct${hot ? ' hot' : ''}">${p}%</span></span>
-        <span class="mini-bar"><span class="${hot ? 'hot' : ''}" style="width:${p}%"></span></span>
-        <span class="meta">${fmtSize(d.total)} 중 ${fmtSize(d.free)} 남음</span>
-      </button>`;
-  }).join('');
-  const skipped = S.summary && S.summary.errors > 0 && S.info.os === 'windows';
+  const ws = workspace();
+  const v = S.view;
+  const dockerBadge = S.docker && !S.docker.error && S.dockerChecked
+    ? S.docker.rows.filter((r) => S.dockerChecked.has(r.kind)).reduce((s, r) => s + r.reclaimBytes, 0) : 0;
+  const main = (on, view, ic, label) => `
+    <button type="button" class="nav${on ? ' on' : ''}" data-a="nav" data-v="${view}">${icon(ic)}<span class="grow">${label}</span></button>`;
+  let wsMeta = '';
+  if (ws) {
+    const p = scanPct();
+    wsMeta = S.scan ? (p !== null ? `스캔 중 ${Math.floor(p)}%` : '스캔 중…') : `${fmtSize(S.summary.size)} · ${fmtAgo(S.scannedAt)} 스캔`;
+  }
   return `
-    <div class="brand">${LOGO}<b>DiskLens</b></div>
-    <div class="side-group drives">
-      <div class="side-label">드라이브</div>
-      ${drives}
-      <button type="button" class="pick-folder" data-a="pickFolder">${icon('folderPlus', 15)}폴더 선택해서 스캔</button>
+    <button type="button" class="brand" data-a="nav" data-v="home" title="홈으로">${LOGO}<b>DiskLens</b></button>
+    <div class="side-group">
+      ${main(v === 'drives', 'drives', 'drive', '드라이브 정리 및 분석')}
+      ${ws ? `
+      <div class="subs">
+        <button type="button" class="nav-sub${v === 'drive' ? ' on' : ''}" data-a="nav" data-v="drive">
+          <span class="grow"><span class="ellipsis" style="display:block">${ws.folder ? icon('open', 13, 'vertical-align:-2px;margin-right:4px') : ''}${esc(ws.name)}</span><small>${S.scan ? '<span class="spinner xs"></span>' : ''}${wsMeta}</small></span>
+        </button>
+      </div>` : ''}
     </div>
     <div class="side-group">
-      <div class="side-label">분석</div>
-      ${navItem('folders', 'folders', '폴더 분석')}
-      ${navItem('big', 'big', '큰 파일')}
-      ${navItem('types', 'types', '파일 종류')}
-    </div>
-    <div class="side-group">
-      <div class="side-label">정리</div>
-      ${navItem('cleanup', 'cleanup', '정리 추천', cleanBadge > 0 ? fmtSize(cleanBadge) : '')}
-      ${navItem('dups', 'dups', '중복 파일', dupBadge > 0 ? fmtSize(dupBadge) : '')}
-      ${navItem('docker', 'docker', 'Docker', dockerBadge > 0 ? fmtDec(dockerBadge) : '')}
-    </div>
-    ${skipped ? `
-      <div class="admin-card">
-        <div class="t">${icon('shield', 16)}항목 ${fmtCount(S.summary.errors)}개를 건너뛰었어요</div>
-        <div class="d">권한이 필요한 폴더예요. 관리자로 실행하면 모두 분석해요.</div>
-        <button type="button" class="btn sm" data-a="admin">관리자로 다시 실행</button>
-      </div>` : ''}`;
+      ${main(v === 'programs', 'programs', 'apps', '프로그램 정리 및 분석')}
+      <div class="subs">
+        <button type="button" class="nav-sub${v === 'docker' ? ' on' : ''}" data-a="nav" data-v="docker">
+          <span class="grow">Docker</span>${dockerBadge > 0 ? `<span class="badge">${fmtDec(dockerBadge)}</span>` : ''}
+        </button>
+      </div>
+    </div>`;
 }
 
 function mainHtml() {
-  if (S.scan && (S.view === 'folders' || S.view === 'start')) return scanningHtml();
   switch (S.view) {
-    case 'folders': return S.folder ? folderHtml() : startHtml();
-    case 'big': return S.summary ? bigHtml() : needScanHtml('큰 파일');
-    case 'types': return S.summary ? typesHtml() : needScanHtml('파일 종류');
-    case 'cleanup': return cleanupHtml();
-    case 'dups': return S.summary ? dupsHtml() : needScanHtml('중복 파일');
+    case 'drives': return drivesPageHtml();
+    case 'programs': return programsPageHtml();
     case 'docker': return dockerHtml();
-    default: return startHtml();
+    case 'drive': return workspace() ? workspaceHtml() : drivesPageHtml();
+    default: return homeHtml();
   }
 }
 
@@ -296,7 +327,9 @@ function headerHtml() {
       <span style="color:var(--text3)">스캔이 끝나면 파일 종류별로 나눠 보여드려요</span>`;
   } else if (S.summary) {
     const s = S.summary;
-    meta = `${fmtAgo(S.scannedAt)} 스캔 · ${(s.elapsedMs / 1000).toFixed(1)}초 · 파일 ${fmtCount(s.files)}개 · 폴더 ${fmtCount(s.dirs)}개${s.cancelled ? ' · 중간에 멈춤' : ''}`;
+    meta = `${fmtAgo(S.scannedAt)} 스캔 · ${(s.elapsedMs / 1000).toFixed(1)}초 · 파일 ${fmtCount(s.files)}개 · 폴더 ${fmtCount(s.dirs)}개${s.cancelled ? ' · 중간에 멈춤' : ''}`
+      + (s.errors > 0 && S.info.os === 'windows'
+        ? ` · 권한 없어 건너뜀 ${fmtCount(s.errors)}개 <button type="button" class="inline-link" data-a="admin">관리자로 다시 실행</button>` : '');
     const cats = s.cats.map((c, i) => ({ ...c, i })).filter((c) => c.size > 0).sort((a, b) => b.size - a.size);
     const rest = Math.max(0, used - s.size);
     segs = cats.map((c) => `<span style="width:${pct(c.size, d.total)}%;background:${CATS[c.i].color}"></span>`).join('')
@@ -311,6 +344,7 @@ function headerHtml() {
     <header class="header">
       <div class="header-top">
         <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+          <button type="button" class="back" data-a="nav" data-v="drives">${icon('back', 14, 'stroke-width:2')}드라이브 목록</button>
           <h1>${title}</h1>
           <div class="sub">${meta}</div>
         </div>
@@ -328,15 +362,27 @@ function headerHtml() {
 
 // ----- 첫 화면 -----
 
-function startHtml() {
+function driveCardsHtml() {
   const C = 2 * Math.PI * 36;
+  const ws = workspace();
+  const busy = !!S.scan;
   const cards = S.drives.map((d, i) => {
     const used = d.total - d.free;
     const p = Math.round(pct(used, d.total));
     const hot = p >= 85;
-    const primary = (S.drive ? d.root === S.drive : i === 0);
+    const here = ws && !ws.folder && ws.driveRoot === d.root;
+    const primary = S.drive ? d.root === S.drive : i === 0;
+    let actions;
+    if (here && S.scan) {
+      const sp = scanPct();
+      actions = `<button type="button" class="btn primary card-btn" data-a="nav" data-v="drive"><span class="spinner xs light"></span>스캔 중${sp !== null ? ` ${Math.floor(sp)}%` : ''} · 보기</button>`;
+    } else if (here) {
+      actions = `<div style="display:flex;gap:8px"><button type="button" class="btn primary card-btn" style="flex:1" data-a="nav" data-v="drive">분석 열기</button><button type="button" class="btn card-btn" data-a="scan" data-v="${esc(d.root)}">다시 스캔</button></div>`;
+    } else {
+      actions = `<button type="button" class="btn ${primary && !ws ? 'primary' : ''} card-btn" data-a="scan" data-v="${esc(d.root)}"${busy ? ' disabled title="다른 스캔이 진행 중이에요"' : ''}>${primary && !ws ? '스캔 시작' : '스캔'}</button>`;
+    }
     return `
-      <div class="card drive-card">
+      <div class="card drive-card${here ? ' current' : ''}">
         <div class="top">
           <svg width="88" height="88" viewBox="0 0 88 88" role="img" aria-label="${esc(d.name)} ${p}% 사용">
             <circle cx="44" cy="44" r="36" fill="none" style="stroke:var(--track)" stroke-width="12"></circle>
@@ -344,61 +390,128 @@ function startHtml() {
             <text x="44" y="49" text-anchor="middle" font-size="16" font-weight="700" style="fill:var(--text)" font-family="IBM Plex Sans KR, sans-serif">${p}%</text>
           </svg>
           <div class="info">
-            <b class="ellipsis">${esc(d.name)}</b>
+            <span style="display:flex;align-items:center;gap:8px;min-width:0"><b class="ellipsis">${esc(d.name)}</b>${here && !S.scan ? '<span class="tag green">스캔함</span>' : ''}</span>
             <span class="num">${fmtSize(d.total)} 중 ${fmtSize(used)} 사용</span>
             <strong style="color:${hot ? 'var(--danger)' : 'var(--good)'}">${fmtSize(d.free)} 남음</strong>
           </div>
         </div>
-        <button type="button" class="btn ${primary ? 'primary' : ''}" style="height:40px;border-radius:10px;font-weight:600" data-a="scan" data-v="${esc(d.root)}">${primary ? '스캔 시작' : '스캔'}</button>
+        ${actions}
       </div>`;
   }).join('');
-  const cleanText = S.cleanup ? `임시 파일·캐시·휴지통 ${fmtSize(sumClean().freed)}` : '임시 파일·캐시·휴지통 찾기';
-  const dockerText = S.docker && !S.docker.error
-    ? `${fmtDec(S.docker.rows.filter((r) => !r.volume).reduce((s, r) => s + r.reclaimBytes, 0))} 회수 가능`
-    : '이미지·빌드 캐시 정리';
   return `
-    <div class="start">
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <h1>어떤 드라이브를 살펴볼까요?</h1>
-        <p>드라이브를 스캔하면 어디에 용량이 쓰이는지 한눈에 보여드려요.</p>
-      </div>
-      <div class="grid-cards">
-        ${cards}
-        <div class="folder-card">
-          ${icon('folderPlus', 28, 'stroke-width:1.6')}
-          <b>특정 폴더만 스캔</b>
-          <span style="font-size:13px">프로젝트 폴더처럼 한 곳만 볼 때</span>
-          <button type="button" class="btn" data-a="pickFolder">폴더 선택…</button>
-        </div>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:12px">
-        <h2 style="margin:0;font-size:15px;font-weight:600;color:var(--text2)">스캔하지 않아도 바로 쓸 수 있어요</h2>
-        <div class="grid-cards" style="gap:12px">
-          <button type="button" class="card shortcut" data-a="nav" data-v="cleanup">
-            <span class="ico-tile" style="width:40px;height:40px;background:var(--goodSoft);color:var(--good)">${icon('cleanup', 20)}</span>
-            <span class="t"><b>정리 추천</b><span>${cleanText}</span></span>
-            ${icon('chev', 16, 'color:var(--text3);stroke-width:2')}
-          </button>
-          <button type="button" class="card shortcut" data-a="nav" data-v="docker">
-            <span class="ico-tile" style="width:40px;height:40px;background:var(--accentSoft);color:var(--accentText)">${icon('docker', 20)}</span>
-            <span class="t"><b>Docker 정리</b><span>${esc(dockerText)}</span></span>
-            ${icon('chev', 16, 'color:var(--text3);stroke-width:2')}
-          </button>
-        </div>
+    <div class="grid-cards">
+      ${cards}
+      <div class="folder-card">
+        ${icon('folderPlus', 28, 'stroke-width:1.6')}
+        <b>특정 폴더만 스캔</b>
+        <span style="font-size:13px">프로젝트 폴더처럼 한 곳만 볼 때</span>
+        <button type="button" class="btn" data-a="pickFolder"${busy ? ' disabled' : ''}>폴더 선택…</button>
       </div>
     </div>`;
 }
 
-function needScanHtml(what) {
+// 홈 카드의 Docker 종류별 짧은 이름
+const DOCKER_SHORT = { Images: '이미지', 'Build Cache': '빌드 캐시', Containers: '컨테이너', 'Local Volumes': '볼륨' };
+
+// 시안 순서(이미지 → 빌드 캐시 → 컨테이너 → 볼륨)로 정렬한 Docker 행
+function dockerRows(dk) {
+  const order = Object.keys(DOCKER_SHORT);
+  const rank = (r) => (order.includes(r.kind) ? order.indexOf(r.kind) : order.length);
+  return [...dk.rows].sort((a, b) => rank(a) - rank(b));
+}
+
+function programCardsHtml() {
+  const dk = S.docker;
+  const ok = dk && !dk.error;
+  let status;
+  if (!dk) status = '<span class="spinner xs"></span>상태 확인 중…';
+  else if (dk.error) status = '<span class="dot off"></span>Docker에 연결할 수 없어요';
+  else status = `<span class="dot"></span>${dk.desktopRunning ? 'Docker Desktop' : 'Docker'} 실행 중`;
+  const total = ok ? dk.rows.filter((r) => !r.volume).reduce((s, r) => s + r.reclaimBytes, 0) : 0;
+  const stats = ok ? dockerRows(dk).map((r) => `
+    <span class="pstat"><span>${esc(DOCKER_SHORT[r.kind] || r.label)}</span><b class="num">${fmtDec(r.reclaimBytes)}</b></span>`).join('') : '';
   return `
-    <div class="page">
-      <div class="card empty">
-        ${icon('drive', 32, 'stroke-width:1.5;color:var(--text3)')}
-        <b>먼저 드라이브를 스캔하세요</b>
-        <span>${what}는 스캔 결과로 보여드려요.</span>
-        <button type="button" class="btn primary" data-a="nav" data-v="start">드라이브 고르기</button>
-      </div>
+    <div class="grid-cards wide">
+      <button type="button" class="card program-card" data-a="nav" data-v="docker">
+        <span class="head">
+          <span class="ico-tile" style="width:48px;height:48px;border-radius:12px;background:var(--accentSoft);color:var(--accentText)">${icon('docker', 24)}</span>
+          <span class="t"><b>Docker</b><span class="status">${status}</span></span>
+          ${ok ? `<span class="pill">${fmtDec(total)} 회수 가능</span>` : ''}
+        </span>
+        ${stats ? `<span class="pstats">${stats}</span>` : ''}
+        <span class="cta">정리하기</span>
+      </button>
+      <div class="soon-card"><b>다른 프로그램은 곧 추가돼요</b>npm·pip 캐시, Xcode, Android Studio 등</div>
     </div>`;
+}
+
+// 홈은 두 묶음을 작은 제목으로, 메뉴 화면은 한 묶음을 큰 제목으로 보여줌
+function drivesSectionHtml(big) {
+  return `
+      <section class="home-section">
+        <div class="section-head"><h2${big ? ' class="big"' : ''}>드라이브 정리 및 분석</h2><p>드라이브를 고르면 먼저 스캔하고, 그 드라이브 안에서 분석과 정리를 할 수 있어요.</p></div>
+        ${driveCardsHtml()}
+      </section>`;
+}
+function programsSectionHtml(big) {
+  return `
+      <section class="home-section">
+        <div class="section-head"><h2${big ? ' class="big"' : ''}>프로그램 정리 및 분석</h2><p>드라이브와 상관없이 프로그램이 쌓아 둔 캐시와 데이터를 정리해요. 스캔하지 않아도 돼요.</p></div>
+        ${programCardsHtml()}
+      </section>`;
+}
+
+function homeHtml() {
+  return `
+    <div class="start">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <h1>무엇을 정리할까요?</h1>
+        <p>드라이브를 골라 스캔하거나, 프로그램이 쌓아 둔 공간을 바로 정리하세요.</p>
+      </div>
+      ${drivesSectionHtml(false)}
+      ${programsSectionHtml(false)}
+    </div>`;
+}
+
+function drivesPageHtml() {
+  return `<div class="start">${drivesSectionHtml(true)}</div>`;
+}
+
+function programsPageHtml() {
+  return `<div class="start">${programsSectionHtml(true)}</div>`;
+}
+
+// ----- 드라이브 작업 공간 -----
+
+function workspaceHtml() {
+  const scanning = !!S.scan;
+  const cleanBadge = S.cleanup && S.cleanChecked && S.cleanupRoot === workspace().driveRoot ? sumClean().freed : 0;
+  const tab = (id, label, badge) => `
+    <button type="button" role="tab" class="tab${S.tab === id && !scanning ? ' on' : ''}" aria-selected="${S.tab === id}" data-a="tab" data-v="${id}"${scanning ? ' disabled' : ''}>
+      ${label}${badge ? `<span class="badge">${badge}</span>` : ''}
+    </button>`;
+  let body;
+  if (scanning) body = scanningHtml();
+  else {
+    switch (S.tab) {
+      case 'big': body = bigHtml(); break;
+      case 'types': body = typesHtml(); break;
+      case 'cleanup': body = cleanupHtml(); break;
+      case 'dups': body = dupsHtml(); break;
+      default: body = S.folder ? folderHtml() : '<div class="card empty"><div class="spinner"></div></div>';
+    }
+  }
+  return `
+    ${headerHtml()}
+    <div class="tabs" role="tablist" aria-label="분석과 정리">
+      ${tab('folders', '폴더 분석')}
+      ${tab('big', '큰 파일')}
+      ${tab('types', '파일 종류')}
+      <span class="tab-sep" aria-hidden="true"></span>
+      ${tab('cleanup', '정리 추천', cleanBadge > 0 ? fmtSize(cleanBadge) : '')}
+      ${tab('dups', '중복 파일')}
+    </div>
+    <section class="section ws">${body}</section>`;
 }
 
 // ----- 스캔 중 -----
@@ -421,8 +534,6 @@ function scanningHtml() {
   const found = (p && p.found) || [];
   const max = found.length ? found[0][1] : 1;
   return `
-    ${headerHtml()}
-    <section class="section">
       <div class="card scan-card">
         <div style="display:flex;flex-direction:column;gap:12px">
           <div class="scan-pct">
@@ -456,9 +567,8 @@ function scanningHtml() {
               </div>`).join('') : '<div class="sub" style="padding:8px 0">큰 폴더를 찾는 중…</div>'}
           </div>
         </div>
-        <div class="note info" style="margin-top:auto">${icon('info', 16)}스캔하는 동안에도 정리 추천과 Docker 탭은 바로 쓸 수 있어요.</div>
-      </div>
-    </section>`;
+        <div class="note info" style="margin-top:auto">${icon('info', 16)}스캔하는 동안에도 Docker 정리는 왼쪽 메뉴에서 바로 할 수 있어요.</div>
+      </div>`;
 }
 
 // ----- 폴더 분석 -----
@@ -489,35 +599,37 @@ function folderHtml() {
   }).join('');
   const more = f.more > 0 ? `<div class="row more"><span style="width:20px"></span><span class="name"><b>그 외 ${fmtCount(f.more)}개 항목</b></span><span class="size num">${fmtSize(f.moreSize)}</span><span class="ratio"></span></div>` : '';
   return `
-    ${headerHtml()}
-    <section class="section">
-      <div class="card clip" style="flex:1;display:flex;flex-direction:column;min-height:520px">
+      <div class="card clip" style="flex:1;display:flex;flex-direction:column;min-height:560px">
         <div class="card-bar top">
           <button type="button" class="icon-btn" aria-label="상위 폴더로" data-a="up"${f.crumbs.length > 1 ? '' : ' disabled'}>${icon('up', 16, 'stroke-width:2')}</button>
           <nav class="crumbs" aria-label="현재 위치">${crumbs}</nav>
           <span class="sub" style="margin-left:auto">${fmtSize(f.size)} · 항목 ${fmtCount(f.items.length + f.more)}개 · 파일 ${fmtCount(f.files)}개</span>
+          <div class="seg" role="group" aria-label="그림 방식">
+            <button type="button" class="${S.viz === 'treemap' ? 'on' : ''}" aria-pressed="${S.viz === 'treemap'}" data-a="viz" data-v="treemap">트리맵</button>
+            <button type="button" class="${S.viz === 'sunburst' ? 'on' : ''}" aria-pressed="${S.viz === 'sunburst'}" data-a="viz" data-v="sunburst">도넛</button>
+          </div>
         </div>
         <div class="folder-body">
           <div class="folder-list">
-            <div class="col-head" style="padding-left:48px"><span style="flex:1">이름</span><span style="width:76px;text-align:right">크기</span><span style="width:124px;text-align:right">이 폴더에서 비율</span></div>
+            <div class="col-head" style="padding-left:36px"><span style="flex:1">이름</span><span style="width:76px;text-align:right">크기</span><span style="width:124px;text-align:right">이 폴더에서 비율</span></div>
             <div class="rows" style="flex:1">${rows || '<div class="empty"><b>비어 있는 폴더예요</b></div>'}${more}</div>
           </div>
-          <div class="treemap-wrap"><div id="treemap" class="treemap" role="img" aria-label="${esc(baseName(f.path))} 트리맵"></div></div>
+          <div class="treemap-wrap"><div id="treemap" class="treemap" data-own role="img" aria-label="${esc(baseName(f.path))} ${S.viz === 'sunburst' ? '도넛 그래프' : '트리맵'}"></div></div>
         </div>
         ${selectionBar()}
       </div>
-    </section>`;
+    `;
 }
 
 function selectionBar() {
   if (S.selected === null || !S.folder || !S.folder.items[S.selected]) {
-    return `<div class="card-bar bottom"><span class="sub">항목을 클릭하면 여기서 열거나 지울 수 있어요 · 더블클릭: 폴더 열기 · Backspace: 상위 폴더</span></div>`;
+    return `<div class="card-bar bottom sel-bar"><span class="sub">항목을 클릭하면 여기서 열거나 지울 수 있어요 · 더블클릭: 폴더 열기 · Backspace: 상위 폴더</span></div>`;
   }
   const it = S.folder.items[S.selected];
   const color = itemColor(it, S.selected);
   const meta = it.isDir ? `${fmtSize(it.size)} · 파일 ${fmtCount(it.files)}개 · 마지막 수정 ${fmtDate(it.mtime)}` : `${fmtSize(it.size)} · 수정 ${fmtDate(it.mtime)}`;
   return `
-    <div class="card-bar bottom">
+    <div class="card-bar bottom sel-bar">
       ${it.isDir ? folderIcon(color) : fileIcon(color)}
       <b style="font-weight:600" class="ellipsis">${esc(it.name)}</b>
       <span class="sub num" style="color:var(--text2)">${meta}</span>
@@ -533,46 +645,169 @@ function selectionBar() {
 }
 
 let tiles = [];
+// 칸 최소 크기(px). 이보다 작아질 항목은 '그 외' 칸으로 묶어 부모 칸 안에 꼭 맞춥니다(ui/treemap.js).
+const TILE_MIN = [28, 22];
+const KID_MIN = [20, 16];
+const TILE_MAX_ITEMS = 300;
+
+// 트리맵 상자 자체의 크기를 지켜봄: 창 크기, 위아래 막대, 옆 목록 폭 등
+// 어떤 이유로든 상자 크기가 바뀌면 그 크기에 맞춰 다시 그림
+let treemapRO = null;
+let treemapBox = null;
+let treemapSize = '';
+function watchTreemap(box) {
+  if (!window.ResizeObserver || treemapBox === box) return;
+  if (!treemapRO) {
+    treemapRO = new ResizeObserver(() => {
+      const b = treemapBox;
+      if (b && b.isConnected && `${b.clientWidth}x${b.clientHeight}` !== treemapSize) drawViz();
+    });
+  }
+  if (treemapBox) treemapRO.unobserve(treemapBox);
+  treemapRO.observe(box);
+  treemapBox = box;
+}
+
 function drawTreemap() {
   const box = document.getElementById('treemap');
   if (!box || !S.folder) return;
+  watchTreemap(box);
   const W = box.clientWidth, H = box.clientHeight;
+  treemapSize = `${W}x${H}`;
+  if (W <= 0 || H <= 0) return;
   const f = S.folder;
-  const MAX = 200;
-  const list = f.items.slice(0, MAX).map((it, i) => ({ it, i })).filter((x) => x.it.size > 0);
-  const restSize = f.items.slice(MAX).reduce((s, it) => s + it.size, 0) + (f.moreSize || 0);
-  const vals = list.map((x) => x.it.size);
-  if (restSize > 0) vals.push(restSize);
-  if (!vals.length) { box.innerHTML = '<div class="empty" style="height:100%"><span>비어 있는 폴더</span></div>'; return; }
-  const rects = squarify(vals, W, H);
+  const list = f.items.map((it, i) => ({ it, i })).filter((x) => x.it.size > 0).sort((a, b) => b.it.size - a.it.size);
+  const head = list.slice(0, TILE_MAX_ITEMS);
+  const extra = list.slice(TILE_MAX_ITEMS).reduce((s, x) => s + x.it.size, 0) + (f.moreSize || 0);
+  const rects = fitLayout(head.map((x) => x.it.size), W, H, TILE_MIN[0], TILE_MIN[1], extra);
+  if (!rects.length) { stopTreemapAnim(); tmLast = null; box.innerHTML = '<div class="empty" style="height:100%"><span>비어 있는 폴더</span></div>'; return; }
+  const shown = rects.filter((r) => r.index >= 0).length;
+  const layout = []; // 전환 효과용: 칸과 미리 보이는 하위 칸의 박스 기준 위치
+  const restCount = list.length - shown + (f.more || 0);
+  const restSize = list.slice(shown).reduce((s, y) => s + y.it.size, 0) + (f.moreSize || 0);
   tiles = [];
   let html = '';
-  rects.forEach((r, k) => {
-    if (r.w < 1 || r.h < 1) return;
-    const x = list[k];
+  rects.forEach((r) => {
+    const x = r.index >= 0 ? head[r.index] : null;
     const isRest = !x;
     const color = isRest ? GRAY : itemColor(x.it, x.i);
-    const kids = !isRest && x.it.isDir && x.it.kids && x.it.kids.length && r.w > 90 && r.h > 90 ? x.it.kids : null;
     const frame = `color-mix(in srgb, ${color} 55%, var(--surface))`;
-    const name = isRest ? `그 외 ${fmtCount((f.items.length - MAX > 0 ? f.items.length - MAX : 0) + f.more)}개` : x.it.name;
+    const name = isRest ? `그 외 ${fmtCount(restCount)}개` : x.it.name;
     const size = isRest ? restSize : x.it.size;
     tiles.push({ name, size, isDir: !isRest && x.it.isDir, index: isRest ? -1 : x.i });
+    // 칸이 충분히 크면 한 단계 아래도 칸 안에 꼭 맞게 그림. 칸이 클수록 더 많이 보임
+    let kidsHtml = '';
+    const kidRects = [];
+    if (!isRest && x.it.isDir && x.it.kids && x.it.kids.length && r.w > 90 && r.h > 90) {
+      // .kids 상자 = 칸 - 테두리(2px×2) - 좌우 4px, 위 28px(이름 자리)·아래 4px
+      const iw = r.w - 12, ih = r.h - 36;
+      const kids = x.it.kids.filter((q) => q.size > 0).sort((a, b) => b.size - a.size);
+      const kidExtra = Math.max(0, x.it.size - kids.reduce((s, q) => s + q.size, 0));
+      const kr = fitLayout(kids.map((q) => q.size), iw, ih, KID_MIN[0], KID_MIN[1], kidExtra, false);
+      const kidShown = kr.filter((b) => b.index >= 0).length;
+      const kidRest = Math.max(x.it.kidsTotal || 0, kids.length) - kidShown;
+      kidsHtml = kr.map((b) => {
+        const q = b.index >= 0 ? kids[b.index] : null;
+        const kname = q ? q.name : kidRest > 0 ? `그 외 ${fmtCount(kidRest)}개` : '그 외';
+        const ksize = q ? q.size : x.it.size - kids.slice(0, kidShown).reduce((s, k) => s + k.size, 0);
+        // 넉넉하면 이름·크기 두 줄, 넓고 낮은 칸은 한 줄('이름 크기')
+        const show = b.w > 64 && b.h > 40;
+        const one = !show && b.w >= 60 && b.h >= 28;
+        // .kids 상자의 박스 기준 위치 = 칸 위치 + 테두리 2px + 왼쪽 4px / 위 28px
+        kidRects.push({ name: kname, x: r.x + 6 + b.x, y: r.y + 30 + b.y, w: b.w, h: b.h });
+        return `<div class="kid${show ? ' has-lbl' : one ? ' has-lbl one' : ''}" style="left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;background:${color};border-color:${frame}">${show || one ? `<b>${esc(kname)}</b><small class="num">${fmtSize(ksize)}</small>` : ''}</div>`;
+      }).join('');
+    }
     let inner = '';
     if (r.w > 110 && r.h > 30) inner += `<div class="lbl"><b>${esc(name)}</b><small class="num">${fmtSize(size)}</small></div>`;
     else if (r.w > 44 && r.h > 24) inner += `<div class="lbl"><b>${esc(name)}</b></div>`;
-    if (kids) {
-      const iw = r.w - 12, ih = r.h - 36;
-      const kr = squarify(kids.map((q) => q.size), iw, ih);
-      inner += `<div class="kids">${kids.map((q, j) => {
-        const b = kr[j];
-        const show = b.w > 64 && b.h > 40;
-        return `<div class="kid" style="left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;background:${color};border:1.5px solid ${frame}">${show ? `<b>${esc(q.name)}</b><small class="num">${fmtSize(q.size)}</small>` : ''}</div>`;
-      }).join('')}</div>`;
-    }
+    if (kidsHtml) inner += `<div class="kids">${kidsHtml}</div>`;
+    layout.push({ name, x: r.x, y: r.y, w: r.w, h: r.h, kids: kidRects });
     const sel = !isRest && S.selected === x.i;
-    html += `<div class="tile${sel ? ' sel' : ''}" data-tile="${tiles.length - 1}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${kids ? frame : color}"${isRest ? '' : ` data-a="tile" data-v="${x.i}"`}>${inner}</div>`;
+    html += `<div class="tile${sel ? ' sel' : ''}" data-tile="${tiles.length - 1}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${kidsHtml ? frame : color}"${isRest ? '' : ` data-a="tile" data-v="${x.i}"`}>${inner}</div>`;
   });
-  box.innerHTML = html;
+  paintTreemap(box, html, { path: f.path, W, H, tiles: layout });
+}
+
+// ----- 트리맵 전환 효과 -----
+// 폴더로 들어가면 클릭한 칸이 확대되어 화면을 채우고, 나오면 지금 화면이 부모 안의 칸 자리로 줄어듦.
+// 같은 폴더를 다시 그리면 같은 이름의 칸이 이전 위치에서 새 위치로 움직임. 배치 계산은 ui/treemap.js
+// 확대(scale)하지 않고 칸의 위치·크기 자체를 바꿈: 테두리·모서리·글자가 늘 원래 크기로 선명함
+const TM_MS = 180;
+const TM_EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+let tmLast = null; // 마지막으로 그린 배치
+let tmNext = null; // 다음 그리기에 쓸 전환 { type, name, path }
+let tmTimer = 0;
+let tmRedraw = false; // 전환 중에 들어온 다시 그리기 요청
+let tmAnims = [];
+
+function planTreemap(type, name, path) { tmNext = { type, name, path }; }
+
+// 진행 중인 전환을 끝 상태로 바로 정리: 이전 층을 지우고 새 층의 칸을 상자로 옮김
+function stopTreemapAnim() {
+  if (!tmTimer) return;
+  clearTimeout(tmTimer);
+  tmTimer = 0;
+  tmRedraw = false;
+  const box = document.getElementById('treemap');
+  if (!box) return;
+  tmAnims.forEach((a) => a.cancel());
+  tmAnims = [];
+  box.querySelectorAll('.tm-old').forEach((el) => el.remove());
+  const layer = box.querySelector('.tm-layer');
+  if (layer) box.replaceChildren(...layer.childNodes);
+  box.classList.remove('tm-anim');
+}
+
+function paintTreemap(box, html, next) {
+  const want = tmNext;
+  tmNext = null;
+  const prev = tmLast;
+  tmLast = next;
+  // 전환 중에 선택 표시 같은 다시 그리기가 오면 끝난 뒤 한 번 그림(전환이 끊기지 않게)
+  if (tmTimer && !want && prev && prev.path === next.path && prev.W === next.W && prev.H === next.H) {
+    tmRedraw = true;
+    tmLast = prev;
+    return;
+  }
+  stopTreemapAnim();
+  const plan = want && want.path === next.path && !(reduceMotion && reduceMotion.matches)
+    ? transitionPlan(want.type, want.name, prev, next) : null;
+  if (!plan) { box.innerHTML = html; return; }
+
+  // 이전 화면은 아래 층에 남겨 두고, 새 화면은 위 층에 그림
+  const old = document.createElement('div');
+  old.className = 'tm-layer tm-old';
+  old.innerHTML = box.innerHTML;
+  const layer = document.createElement('div');
+  layer.className = 'tm-layer';
+  layer.innerHTML = html;
+  box.replaceChildren(old, layer);
+  box.classList.add('tm-anim');
+  const geo = (r) => ({ left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
+  const opts = { duration: TM_MS, easing: TM_EASE };
+  // 새 칸: 출발 자리에서 제자리로 위치·크기가 바뀜
+  Array.from(layer.children).forEach((el, i) => {
+    const r = next.tiles[i], f = plan.from[i];
+    if (!r || !f) return;
+    tmAnims.push(el.animate([{ ...geo(f), opacity: f.fade ? 0 : 1 }, { ...geo(r), opacity: 1 }], opts));
+  });
+  // 이전 칸: 옮겨 갈 자리로 위치·크기가 바뀌면서 앞쪽 60% 안에 흐려짐
+  Array.from(old.children).forEach((el, i) => {
+    const r = prev.tiles[i];
+    if (!r) return;
+    const to = plan.oldTo ? mapRect(r, plan.oldTo, next.W, next.H) : r;
+    tmAnims.push(el.animate([{ ...geo(r), opacity: 1 }, { opacity: 0, offset: 0.6 }, { ...geo(to), opacity: 0 }], { ...opts, fill: 'forwards' }));
+  });
+  tmTimer = setTimeout(() => {
+    tmTimer = 0;
+    tmAnims = [];
+    old.remove();
+    box.replaceChildren(...layer.childNodes);
+    box.classList.remove('tm-anim');
+    if (tmRedraw) { tmRedraw = false; drawTreemap(); }
+  }, TM_MS + 20);
 }
 
 function showTip(e) {
@@ -587,6 +822,271 @@ function showTip(e) {
   tip.innerHTML = `<div class="tip" style="left:${x}px;top:${y}px"><b>${esc(d.name)}</b><span class="num">${fmtSize(d.size)} · 이 폴더의 ${share}%</span>${d.isDir ? '<small>클릭해서 열기</small>' : ''}</div>`;
 }
 
+// ----- 도넛(선버스트) -----
+// 가운데 원 = 지금 폴더, 바깥으로 하위 단계가 고리 SUN_DEPTH겹. 배치·전환 계산은 ui/sunburst.js
+// 폴더를 옮기면 누른 조각이 한 바퀴로 펼쳐지고(들어가기), 나올 때는 그 조각 자리로 접힘
+const sunEase = cubicBezier(0.2, 0.8, 0.2, 1);
+let sunLast = null; // 마지막으로 그린 도넛 { box, key, path, W, H, arcs }
+let sunAnim = 0;
+let sunHot = -1;
+// 강조 조각의 들림(px)과 그 전환: 조각 번호 → 지금 들린 양 / 진행 중인 전환
+const SUN_LIFT = 2.5;
+const SUN_LIFT_MS = 140;
+let liftNow = new Map();
+let liftAnims = new Map();
+let liftFrame = 0;
+let sunWant = '';
+
+function drawViz() {
+  if (S.viz === 'sunburst') { drawSunburst(); return; }
+  stopSunAnim();
+  sunLast = null;
+  drawTreemap();
+}
+
+function stopSunAnim() {
+  if (!sunAnim) return;
+  cancelAnimationFrame(sunAnim);
+  sunAnim = 0;
+  const box = document.getElementById('treemap');
+  const old = box && box.querySelector('.sun-old');
+  if (old) old.remove();
+}
+
+// 트리맵에서 도넛으로 바꾼 직후처럼 고리 트리가 없으면 받아 옴
+async function ensureSun() {
+  const path = S.folder.path;
+  if (sunWant === path) return;
+  sunWant = path;
+  let rings = null;
+  try { rings = await invoke('sunburst', { path }); } catch (e) { toast(errMsg(e)); }
+  sunWant = '';
+  // 못 받았으면 빈 도넛으로 둠(다시 그릴 때마다 또 요청하지 않게)
+  if (S.folder && S.folder.path === path) S.sun = { path, rings: rings || [] };
+  render();
+}
+
+// 조각 색: 폴더는 시작 각도에 따라 무지개처럼 이어지는 색(안쪽 진하게, 바깥 밝게),
+// 파일은 회색, 작은 항목 묶음은 어두운 회색(ui/sunburst.js)
+function sunPathsHtml(arcs, geo) {
+  return arcs.map((a, i) => {
+    const g = geo(a, i);
+    const fill = a.node.rest ? 'var(--sun-rest)' : !a.node.isDir ? 'var(--sun-file)' : sunColor(arcHue(a), a.depth);
+    return `<path d="${arcPath(g.cx, g.cy, g.r0, g.r1, g.a0, g.a1)}" fill="${fill}" data-sun="${i}"${a.node.rest ? '' : ` data-a="sun" data-v="${i}"`}${a.node.rest ? ' class="rest"' : ''}/>`;
+  }).join('');
+}
+
+// 가운데 글자: 지금 폴더의 전체 크기(크게)와 이름
+function sunCenterHtml() {
+  const f = S.folder;
+  return `<b class="num">${fmtSize(f.size)}</b><small>${esc(baseName(f.path))}</small>`;
+}
+
+// 오른쪽 위 정보: 마우스를 올린 조각(또는 목록 줄)의 종류·이름·크기. 이름은 자르지 않고 줄을 바꿈
+function sunInfoHtml(a) {
+  const f = S.folder;
+  const kind = a.node.rest ? '묶음' : a.node.isDir ? '폴더' : '파일';
+  const name = a.node.rest ? `그 외 ${fmtCount(a.node.rest)}개` : a.node.name;
+  const hint = a.node.rest ? '작은 항목을 모아 둔 조각' : a.node.isDir ? '클릭해서 열기' : `클릭하면 ${esc(S.info.fileManager)}에서 보기`;
+  return `<span class="kind ${a.node.rest ? 'rest' : a.node.isDir ? 'dir' : 'file'}">${kind}</span>`
+    + `<b>${esc(name)}</b><span class="num">${fmtSize(a.node.size)} · 이 폴더의 ${pct(a.node.size, f.size).toFixed(1)}%</span><small>${hint}</small>`;
+}
+
+// 조각 i의 경로를 들린 양 v만큼 넓혀 다시 그림
+function liftPath(el, i, v) {
+  const a = sunLast.arcs[i];
+  const r = liftRadii(sunLast.rr.at(a.l0), sunLast.rr.at(a.l0 + 1), v);
+  el.setAttribute('d', arcPath(sunLast.cx, sunLast.cy, r.r0, r.r1, a.a0, a.a1));
+}
+
+// 조각 i를 들리게(to = SUN_LIFT) 또는 내려놓게(to = 0). 지금 들린 양에서 이어서 움직임
+function liftArc(el, i, to) {
+  const from = liftNow.get(i) || 0;
+  if (from === to && !liftAnims.has(i)) return;
+  if (reduceMotion && reduceMotion.matches) {
+    liftAnims.delete(i);
+    liftPath(el, i, to);
+    if (to) liftNow.set(i, to); else liftNow.delete(i);
+    return;
+  }
+  liftAnims.set(i, { el, from, to, t0: performance.now() });
+  if (!liftFrame) liftFrame = requestAnimationFrame(liftTick);
+}
+function liftTick(now) {
+  liftFrame = 0;
+  if (!sunLast) { liftAnims.clear(); return; }
+  liftAnims.forEach((m, i) => {
+    const t = Math.min(1, (now - m.t0) / SUN_LIFT_MS);
+    const v = m.from + (m.to - m.from) * sunEase(t);
+    liftPath(m.el, i, v);
+    if (t < 1) { liftNow.set(i, v); return; }
+    liftAnims.delete(i);
+    if (m.to) liftNow.set(i, m.to); else liftNow.delete(i);
+  });
+  if (liftAnims.size) liftFrame = requestAnimationFrame(liftTick);
+}
+// 도넛을 새로 그리면 들림 상태는 버림(조각이 모두 새로 만들어짐)
+function resetLift() {
+  if (liftFrame) cancelAnimationFrame(liftFrame);
+  liftFrame = 0;
+  liftAnims.clear();
+  liftNow.clear();
+}
+
+// 조각 i를 강조(-1이면 해제). 강조한 조각은 맨 위 층으로 올려 살짝 들고(liftArc) 색이 은은하게 깜빡임
+function setSunHot(i) {
+  if (!sunLast || sunAnim || i === sunHot) return;
+  const svg = sunLast.box.querySelector('svg.sun');
+  if (!svg) return;
+  const base = svg.querySelector('.sun-new'), up = svg.querySelector('.sun-hot');
+  // 이전 강조 조각은 제자리 층으로 돌려보내고 내려놓음
+  Array.from(up.children).forEach((el) => {
+    el.classList.remove('hot');
+    base.appendChild(el);
+    liftArc(el, Number(el.dataset.sun), 0);
+  });
+  const el = i >= 0 ? svg.querySelector(`[data-sun="${i}"]`) : null;
+  sunHot = el ? i : -1;
+  if (el) {
+    up.appendChild(el);
+    el.getBoundingClientRect(); // 층을 옮긴 뒤 한 번 계산해야 깜빡임이 처음부터 보임
+    el.classList.add('hot');
+    liftArc(el, i, SUN_LIFT);
+  }
+  keepSelOnTop(base);
+  const info = sunLast.box.querySelector('.sun-info');
+  if (info) {
+    if (el) info.innerHTML = sunInfoHtml(sunLast.arcs[i]);
+    info.classList.toggle('on', !!el);
+  }
+}
+
+// 마우스 위치에서 강조할 조각: 도넛 조각이면 그 조각, 왼쪽 목록 줄이면 그 항목의 첫 고리 조각
+function sunHover(target) {
+  if (!sunLast) return;
+  let i = -1;
+  const p = target && target.closest ? target.closest('#treemap [data-sun]') : null;
+  if (p) i = Number(p.dataset.sun);
+  else {
+    const row = target && target.closest ? target.closest('.folder-list .row[data-a="sel"]') : null;
+    const it = row && S.folder ? S.folder.items[Number(row.dataset.v)] : null;
+    if (it) i = sunLast.arcs.findIndex((a) => a.depth === 1 && a.node.path === it.path);
+  }
+  setSunHot(i);
+}
+
+// 선택 테두리가 이웃 조각에 가리지 않게 맨 위로
+function keepSelOnTop(base) {
+  const sel = base.querySelector('.sel');
+  if (sel && sel !== base.lastElementChild) base.appendChild(sel);
+}
+
+// 목록에서 고른 항목의 조각을 표시
+function sunMarkSelected() {
+  const it = S.selected !== null && S.folder ? S.folder.items[S.selected] : null;
+  const svg = sunLast.box.querySelector('svg.sun');
+  if (!svg) return;
+  const cur = svg.querySelector('.sel');
+  const idx = it ? sunLast.arcs.findIndex((a) => a.depth === 1 && a.node.path === it.path) : -1;
+  const el = idx >= 0 ? svg.querySelector(`[data-sun="${idx}"]`) : null;
+  if (cur && cur !== el) cur.classList.remove('sel');
+  if (el) el.classList.add('sel');
+  keepSelOnTop(svg.querySelector('.sun-new'));
+}
+
+function drawSunburst() {
+  const box = document.getElementById('treemap');
+  if (!box || !S.folder) return;
+  watchTreemap(box);
+  const W = box.clientWidth, H = box.clientHeight;
+  treemapSize = `${W}x${H}`;
+  if (W <= 0 || H <= 0) return;
+  // 트리맵 쪽 상태는 비움(다시 트리맵으로 오면 처음부터 그림)
+  stopTreemapAnim();
+  tmLast = null;
+  tmNext = null;
+  const f = S.folder;
+  if (!S.sun || S.sun.path !== f.path) {
+    if (!box.querySelector('.spinner')) box.innerHTML = '<div class="empty" style="height:100%"><div class="spinner"></div></div>';
+    ensureSun();
+    return;
+  }
+  const key = `${f.path}|${W}x${H}|${f.size}`;
+  // 같은 폴더·같은 크기면 선택 표시만 고침(조각을 다시 만들지 않음)
+  if (sunLast && sunLast.box === box && sunLast.key === key && box.querySelector('.sun-new')) {
+    sunMarkSelected();
+    return;
+  }
+  const arcs = sunArcs(S.sun.rings, f.size);
+  if (!arcs.length) {
+    stopSunAnim();
+    sunLast = null;
+    box.innerHTML = '<div class="empty" style="height:100%"><span>비어 있는 폴더</span></div>';
+    return;
+  }
+  const cx = W / 2, cy = H / 2;
+  const rr = ringRadii(Math.max(40, Math.min(W, H) / 2 - 8));
+  const at = (g) => ({ cx, cy, r0: rr.at(g.l0), r1: rr.at(g.l0 + 1), a0: g.a0, a1: g.a1 });
+  const prev = sunLast && sunLast.box === box && sunLast.W === W && sunLast.H === H ? sunLast : null;
+  const next = { box, key, path: f.path, W, H, arcs, cx, cy, rr };
+  const plan = prev && !(reduceMotion && reduceMotion.matches) ? sunTransition(prev, next) : null;
+  setSunHot(-1); // 강조 조각을 제자리 층으로 돌린 뒤 이전 도넛을 넘겨받음
+  const oldLayer = plan ? box.querySelector('.sun-new') : null;
+  stopSunAnim();
+  resetLift();
+  sunLast = next;
+  sunHot = -1;
+  const up = f.crumbs.length > 1;
+  // 전환 중 바깥 고리 너머로 밀려나는 조각은 도넛 원 밖으로 보이지 않게 자름
+  // 강조 효과: 맨 위 층(sun-hot)에 올린 조각이 이웃을 덮으며 살짝 들림(liftArc)
+  const svg = `<svg class="sun" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
+    + `<clipPath id="sun-clip"><circle cx="${cx}" cy="${cy}" r="${rr.at(SUN_DEPTH) + 1}"/></clipPath>`
+    + `<g class="sun-new">${sunPathsHtml(arcs, (a, i) => at(plan ? plan.from[i] : a))}</g>`
+    + `<g class="sun-hot"></g>`
+    + `<circle class="sun-hole${up ? ' up' : ''}" cx="${cx}" cy="${cy}" r="${rr.hole - 2}"${up ? ' data-a="up"' : ''}/>`
+    + `</svg><div class="sun-center" style="left:${cx}px;top:${cy}px;width:${Math.max(64, rr.hole * 1.9)}px">${sunCenterHtml()}</div>`
+    + `<div class="sun-info" aria-live="polite"></div>`;
+  box.innerHTML = svg;
+  sunMarkSelected();
+  if (!plan || !oldLayer) return;
+
+  // 이전 도넛은 새 도넛 아래에 깔고 함께 움직이면서 앞쪽 60% 안에 흐려짐
+  const newLayer = box.querySelector('.sun-new');
+  oldLayer.classList.replace('sun-new', 'sun-old');
+  oldLayer.removeAttribute('style');
+  oldLayer.setAttribute('clip-path', 'url(#sun-clip)');
+  newLayer.setAttribute('clip-path', 'url(#sun-clip)');
+  newLayer.parentNode.insertBefore(oldLayer, newLayer);
+  const oldPaths = Array.from(oldLayer.children);
+  const newPaths = Array.from(newLayer.children);
+  const t0 = performance.now();
+  const frame = (now) => {
+    const t = Math.min(1, (now - t0) / TM_MS);
+    const e = sunEase(t);
+    // 선택한 조각은 맨 위로 옮겨 두므로 순서가 아니라 data-sun 번호로 짝을 찾음
+    newPaths.forEach((el) => {
+      const i = Number(el.dataset.sun);
+      const g = at(lerpGeom(plan.from[i], arcs[i], e));
+      el.setAttribute('d', arcPath(g.cx, g.cy, g.r0, g.r1, g.a0, g.a1));
+      if (plan.from[i].fade) el.style.opacity = String(t);
+    });
+    oldPaths.forEach((el) => {
+      const j = Number(el.dataset.sun);
+      const a = prev.arcs[j], to = plan.oldTo[j];
+      if (!a || !to) return;
+      const g = at(lerpGeom(a, to, e));
+      el.setAttribute('d', arcPath(g.cx, g.cy, g.r0, g.r1, g.a0, g.a1));
+    });
+    oldLayer.style.opacity = String(Math.max(0, 1 - t / 0.6));
+    if (t < 1) { sunAnim = requestAnimationFrame(frame); return; }
+    sunAnim = 0;
+    oldLayer.remove();
+    newLayer.removeAttribute('clip-path'); // 선택 테두리가 바깥 가장자리에서 잘리지 않게
+    newPaths.forEach((el) => { el.style.opacity = ''; });
+  };
+  sunAnim = requestAnimationFrame(frame);
+}
+
 // ----- 큰 파일 -----
 
 function filteredBig() {
@@ -595,7 +1095,7 @@ function filteredBig() {
 }
 
 function bigHtml() {
-  if (!S.big) return `${headerHtml()}<section class="section"><div class="card empty"><div class="spinner"></div></div></section>`;
+  if (!S.big) return `<div class="card empty"><div class="spinner"></div></div>`;
   const list = filteredBig();
   const present = new Set(S.big.map((b) => b.cat));
   const chips = [`<button type="button" class="chip${S.bigCat < 0 ? ' on' : ''}" data-a="bigCat" data-v="-1">전체</button>`]
@@ -611,7 +1111,7 @@ function bigHtml() {
           : `<input type="checkbox" class="check" data-c="bigCheck" data-v="${esc(b.path)}"${on ? ' checked' : ''} aria-label="${esc(b.name)} 선택">`}
         <span class="ext-badge" style="background:${CATS[b.cat] ? CATS[b.cat].color : GRAY}">${esc(b.ext.slice(0, 5))}</span>
         <span class="fname">
-          <span class="l1"><b>${esc(b.name)}</b>${b.protected ? '<span class="tag">시스템 관리</span>' : ''}</span>
+          <span class="l1"><b>${esc(b.name)}</b>${b.protected ? `<span class="tag">${S.info.os === 'windows' ? 'Windows 관리' : '시스템 관리'}</span>` : ''}</span>
           <span class="l2 mono ellipsis">${esc(b.dir)}</span>
         </span>
         <span class="date num">${fmtDate(b.mtime)}</span>
@@ -619,8 +1119,6 @@ function bigHtml() {
       </div>`;
   }).join('');
   return `
-    ${headerHtml()}
-    <section class="section">
       <div class="card clip" style="flex:1;display:flex;flex-direction:column;min-height:480px">
         <div class="card-bar top" style="padding:12px 14px">
           <label class="search">${icon('search', 16, 'stroke-width:2')}<span class="sr-only">파일 검색</span><input id="bigSearch" type="text" placeholder="파일 이름, 경로, .iso" value="${esc(S.bigQuery)}" data-i="bigQuery"></label>
@@ -631,14 +1129,14 @@ function bigHtml() {
         <div class="scroll" style="flex:1">${rows || '<div class="empty"><b>조건에 맞는 파일이 없어요</b></div>'}</div>
         <div class="card-bar bottom">
           <span><b style="font-weight:600">${sel.length}개 선택</b><span style="color:var(--text2)" class="num"> · ${fmtSize(selSize)}</span></span>
-          <button type="button" class="btn sm ghost" data-a="bigClear"${sel.length ? '' : ' disabled'}>선택 해제</button>
+          <button type="button" class="btn sm ghost" style="padding:0 10px" data-a="bigClear"${sel.length ? '' : ' disabled'}>선택 해제</button>
           <div style="margin-left:auto;display:flex;gap:6px">
-            <button type="button" class="btn sm" data-a="reveal" data-v="${esc(sel[0] ? sel[0].path : '')}"${sel.length === 1 ? '' : ' disabled'}>${esc(S.info.fileManager)}에서 보기</button>
-            <button type="button" class="btn sm danger" data-a="bigTrash"${sel.length ? '' : ' disabled'}>${icon('trash', 15, 'stroke-width:2')}휴지통으로 보내기</button>
+            <button type="button" class="btn sm tall" data-a="reveal" data-v="${esc(sel[0] ? sel[0].path : '')}"${sel.length === 1 ? '' : ' disabled'}>${esc(S.info.fileManager)}에서 보기</button>
+            <button type="button" class="btn sm tall danger" data-a="bigTrash"${sel.length ? '' : ' disabled'}>${icon('trash', 15, 'stroke-width:2')}휴지통으로 보내기</button>
           </div>
         </div>
       </div>
-    </section>`;
+    `;
 }
 
 // ----- 파일 종류 -----
@@ -659,8 +1157,8 @@ function typesHtml() {
     <button type="button" class="cat-row" data-a="catToBig" data-v="${c.i}">
       <i style="background:${CATS[c.i].color}"></i>
       <span style="flex:1;font-weight:500">${CATS[c.i].name}</span>
-      <span class="sub num">${fmtCount(c.count)}개</span>
-      <span class="num" style="width:70px;text-align:right;font-weight:600">${fmtSize(c.size)}</span>
+      <span class="num" style="font-size:12px;color:var(--text3)">${fmtCount(c.count)}개</span>
+      <span class="num" style="width:64px;text-align:right;font-weight:600">${fmtSize(c.size)}</span>
       <span class="num" style="width:44px;text-align:right;font-size:13px;color:var(--text2)">${Math.round(pct(c.size, total))}%</span>
     </button>`).join('');
   const emax = s.exts.length ? s.exts[0].size : 1;
@@ -668,12 +1166,10 @@ function typesHtml() {
     <div class="ext-row">
       <span class="e mono">${e.ext ? '.' + esc(e.ext) : '(없음)'}</span>
       <span class="track"><span style="width:${pct(e.size, emax)}%;background:${CATS[e.cat] ? CATS[e.cat].color : GRAY}"></span></span>
-      <span class="sub num" style="width:90px;text-align:right">${fmtCount(e.count)}개</span>
+      <span class="num" style="width:86px;text-align:right;font-size:12px;color:var(--text3)">${fmtCount(e.count)}개</span>
       <span class="num" style="width:70px;text-align:right;font-weight:600">${fmtSize(e.size)}</span>
     </div>`).join('');
   return `
-    ${headerHtml()}
-    <section class="section">
       <div class="types">
         <div class="card">
           <h2>종류별 용량</h2>
@@ -685,14 +1181,14 @@ function typesHtml() {
             </svg>
             <div style="flex:1 1 220px;min-width:0;display:flex;flex-direction:column">${catRows}</div>
           </div>
-          <p class="sub" style="margin:0;line-height:1.6;color:var(--text2)">'기타'에는 시스템 파일과 확장자 없는 파일이 들어 있어요. 항목을 누르면 해당 종류의 큰 파일만 모아 보여드려요.</p>
+          <p class="sub" style="margin:0;line-height:1.6;color:var(--text2)">'기타'에는 ${S.info.os === 'windows' ? 'hiberfil.sys·pagefile.sys 같은 Windows ' : ''}시스템 파일과 확장자 없는 파일이 들어 있어요. 항목을 누르면 해당 종류의 큰 파일만 모아 보여드려요.</p>
         </div>
         <div class="card" style="gap:14px">
           <div style="display:flex;align-items:baseline;gap:8px"><h2>확장자별 상위</h2><span class="sub">전체 ${fmtCount(s.extKinds)}종</span></div>
           <div>${extRows}</div>
         </div>
       </div>
-    </section>`;
+    `;
 }
 
 // ----- 정리 추천 -----
@@ -706,26 +1202,27 @@ function sumClean() {
   }
   return { freed, trashed, n };
 }
+// 문장 안에서 쓰는 짧은 드라이브 이름: Windows는 "C:", 그 밖은 드라이브 이름
+function driveLabel(d) {
+  return /^[a-z]:[\\/]?$/i.test(d.root) ? d.root.slice(0, 2).toUpperCase() : d.name;
+}
 function systemDrive() {
   return S.drives.find((d) => /^c:/i.test(d.root)) || S.drives.find((d) => d.root === '/') || S.drives[0];
 }
 
 function cleanupHtml() {
   const head = `
-    <div class="title-row">
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <h1>정리 추천</h1>
-        <div class="sub">지워도 프로그램이 다시 만드는 캐시와 임시 파일이에요</div>
-      </div>
+    <div class="tool-row">
+      <div class="sub">이 드라이브에서 지워도 프로그램이 다시 만드는 캐시와 임시 파일이에요${S.cleanup && S.cleanupAt ? ` · ${fmtAgo(S.cleanupAt) === '방금' ? '방금' : fmtAgo(S.cleanupAt) + '에'} 분석` : ''}</div>
       <div class="right">
-        <button type="button" class="btn" data-a="cleanupAnalyze"${S.cleanupLoading || S.busy ? ' disabled' : ''}>${S.cleanupLoading ? '<span class="spinner"></span>' : icon('refresh', 16, 'stroke-width:2')}다시 분석</button>
+        <button type="button" class="btn tool" data-a="cleanupAnalyze"${S.cleanupLoading || S.busy ? ' disabled' : ''}>${S.cleanupLoading ? '<span class="spinner"></span>' : icon('refresh', 16, 'stroke-width:2')}다시 분석</button>
       </div>
     </div>`;
   if (!S.cleanup) {
-    return `<div class="page">${head}<div class="card empty"><div class="spinner"></div><span>정리할 항목을 찾는 중…</span></div></div>`;
+    return `<div class="tab-page">${head}<div class="card empty"><div class="spinner"></div><span>정리할 항목을 찾는 중…</span></div></div>`;
   }
   const { freed, trashed, n } = sumClean();
-  const d = systemDrive();
+  const d = (workspace() && workspace().drive) || systemDrive();
   const after = d ? d.free + freed : 0;
   const hero = `
     <div class="card hero">
@@ -733,7 +1230,7 @@ function cleanupHtml() {
         <span class="k">선택한 ${n}개 항목을 정리하면</span>
         <span class="v">
           <b class="num">${fmtSize(freed)}</b>
-          <span>확보${d ? ` · ${esc(d.name)} 남은 공간 ${fmtSize(d.free)} → <strong class="num">${fmtSize(after)}</strong>` : ''}${trashed ? ` · 휴지통으로 ${fmtSize(trashed)}` : ''}</span>
+          <span>확보${d ? ` · ${esc(driveLabel(d))} 남은 공간 ${fmtSize(d.free)} → <strong class="num">${fmtSize(after)}</strong>` : ''}${trashed ? ` · 휴지통으로 ${fmtSize(trashed)}` : ''}</span>
         </span>
         ${d ? `<div class="after-bar" role="img" aria-label="정리 후 남은 공간"><span style="width:${pct(d.total - d.free - freed, d.total)}%;background:var(--muted)"></span><span style="width:${pct(freed, d.total)}%;background:var(--good)"></span></div>` : ''}
       </div>
@@ -759,11 +1256,10 @@ function cleanupHtml() {
       </div>`;
   }).join('');
   return `
-    <div class="page">
+    <div class="tab-page">
       ${head}
       ${hero}
       <div class="card clip">${rows}</div>
-      <div class="sub">브라우저 캐시는 브라우저를 모두 닫은 뒤 정리하세요. 사용 중인 파일은 자동으로 건너뜁니다.</div>
     </div>`;
 }
 
@@ -775,35 +1271,32 @@ function dupsHtml() {
   for (const g of S.dups || []) for (const f of g.files) if (S.dupChecked.has(f.path)) { sel.push(f.path); selSize += g.size; }
   const wasted = (S.dups || []).reduce((s, g) => s + g.size * (g.files.length - 1), 0);
   const head = `
-    <div class="title-row">
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <h1>중복 파일</h1>
-        <div class="sub">이름이 달라도 내용이 완전히 같은 파일만 묶었어요</div>
-      </div>
+    <div class="tool-row">
+      <div class="sub">이름이 달라도 내용이 완전히 같은 파일만 ${S.dups ? '묶었어요' : '찾아요'}</div>
       <div class="right">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2)">최소 크기
           <select class="select" id="dupMin" data-c="dupMin"${S.dupsRunning ? ' disabled' : ''}>
-            ${[1, 10, 100, 1024].map((m) => `<option value="${m}"${S.dupMin === m ? ' selected' : ''}>${m >= 1024 ? '1 GB' : m + ' MB'}</option>`).join('')}
+            ${[1, 10, 100].map((m) => `<option value="${m}"${S.dupMin === m ? ' selected' : ''}>${m} MB</option>`).join('')}
           </select>
         </label>
         ${S.dupsRunning
           ? `<button type="button" class="btn" data-a="dupsCancel">중지</button>`
-          : `<button type="button" class="btn ${S.dups ? '' : 'primary'}" data-a="dupsFind">${S.dups ? '다시 찾기' : '중복 찾기'}</button>`}
+          : `<button type="button" class="btn tool ${S.dups ? '' : 'primary'}" data-a="dupsFind">${S.dups ? '다시 찾기' : '중복 찾기'}</button>`}
       </div>
     </div>`;
   if (S.dupsRunning) {
     const p = S.dupsProg;
-    return `<div class="page">${head}
+    return `<div class="tab-page">${head}
       <div class="card" style="padding:22px;display:flex;flex-direction:column;gap:12px">
         <div style="display:flex;align-items:center;gap:10px"><span class="spinner"></span><b style="font-weight:600">같은 크기의 파일 내용을 비교하는 중…</b><span class="sub num" style="margin-left:auto">${fmtCount(p.done)} / ${fmtCount(p.total)} 그룹</span></div>
         <div class="progress"><div style="width:${pct(p.done, p.total)}%"></div></div>
       </div></div>`;
   }
   if (!S.dups) {
-    return `<div class="page">${head}<div class="card empty">${icon('dups', 32, 'stroke-width:1.5;color:var(--text3)')}<b>중복 파일을 찾아볼까요?</b><span>크기가 같은 파일끼리 내용을 비교해서 진짜 같은 파일만 보여드려요.</span></div></div>`;
+    return `<div class="tab-page">${head}<div class="card empty">${icon('dups', 32, 'stroke-width:1.5;color:var(--text3)')}<b>중복 파일을 찾아볼까요?</b><span>크기가 같은 파일끼리 내용을 비교해서 진짜 같은 파일만 보여드려요.</span></div></div>`;
   }
   if (!S.dups.length) {
-    return `<div class="page">${head}<div class="card empty">${icon('check', 32, 'stroke-width:1.8;color:var(--good)')}<b>중복 파일이 없어요</b><span>${S.dupMin >= 1024 ? '1 GB' : S.dupMin + ' MB'} 이상 파일 중에는 같은 파일이 없어요.</span></div></div>`;
+    return `<div class="tab-page">${head}<div class="card empty">${icon('check', 32, 'stroke-width:1.8;color:var(--good)')}<b>중복 파일이 없어요</b><span>${S.dupMin} MB 이상 파일 중에는 같은 파일이 없어요.</span></div></div>`;
   }
   const groups = S.dups.slice(0, S.dupShow).map((g, gi) => {
     const anyOn = g.files.some((f) => S.dupChecked.has(f.path));
@@ -828,7 +1321,7 @@ function dupsHtml() {
       </div>`;
   }).join('');
   return `
-    <div class="page">
+    <div class="tab-page">
       ${head}
       <div class="card hero" style="padding:16px 20px">
         <div class="l" style="gap:2px">
@@ -849,18 +1342,24 @@ function dupsHtml() {
 
 // ----- Docker -----
 
+// 빌드 캐시는 사용 개수가 없고, 컨테이너는 '실행' 중인 개수
+function dockerCount(r) {
+  if (r.kind === 'Build Cache') return `${esc(r.total)}개`;
+  return `${esc(r.total)}개 중 ${esc(r.active)}개 ${r.kind === 'Containers' ? '실행' : '사용'}`;
+}
+
 function dockerHtml() {
   const dk = S.docker;
   const status = !dk ? '<span class="spinner"></span> 확인 중…'
     : dk.error ? '<span class="dot off"></span> Docker에 연결할 수 없어요'
-    : `<span class="dot"></span> Docker 실행 중${dk.version ? ` · 엔진 ${esc(dk.version)}` : ''}`;
+    : `<span class="dot"></span> ${dk.desktopRunning ? 'Docker Desktop' : 'Docker'} 실행 중${dk.version ? ` · 엔진 ${esc(dk.version)}` : ''}`;
   const head = `
     <div class="title-row">
       <div style="display:flex;flex-direction:column;gap:6px">
         <h1>Docker</h1>
         <span style="display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--text2)">${status}</span>
       </div>
-      <div class="right"><button type="button" class="btn" data-a="dockerRefresh"${S.dockerLoading || S.dockerBusy ? ' disabled' : ''}>${icon('refresh', 16, 'stroke-width:2')}새로고침</button></div>
+      <div class="right"><button type="button" class="btn tool" data-a="dockerRefresh"${S.dockerLoading || S.dockerBusy ? ' disabled' : ''}>${icon('refresh', 16, 'stroke-width:2')}새로고침</button></div>
     </div>`;
   if (!dk) return `<div class="page">${head}<div class="card empty"><div class="spinner"></div></div></div>`;
 
@@ -870,7 +1369,7 @@ function dockerHtml() {
   } else {
     const sel = dk.rows.filter((r) => S.dockerChecked.has(r.kind));
     const selSize = sel.reduce((s, r) => s + r.reclaimBytes, 0);
-    const rows = dk.rows.map((r) => {
+    const rows = dockerRows(dk).map((r) => {
       const [ic, tint] = DOCKER_ICON[r.kind] || ['docker', GRAY];
       return `
         <div style="display:flex;align-items:center;gap:14px;min-height:56px;padding:0 18px;border-top:1px solid var(--border)">
@@ -880,7 +1379,7 @@ function dockerHtml() {
             <span style="font-size:15px;font-weight:600">${esc(r.label)}</span>
             ${r.volume ? '<span style="font-size:12px;color:var(--danger)">데이터베이스 같은 데이터가 함께 지워질 수 있어요</span>' : ''}
           </span>
-          <span style="width:120px;font-size:13px;color:var(--text2)">${esc(r.total)}개 중 ${esc(r.active)}개 사용</span>
+          <span style="width:120px;font-size:13px;color:var(--text2)">${dockerCount(r)}</span>
           <span class="num" style="width:84px;text-align:right;color:var(--text2)">${fmtDec(r.sizeBytes)}</span>
           <span class="num" style="width:96px;text-align:right;font-size:15px;font-weight:600;color:var(--good)">${fmtDec(r.reclaimBytes)}</span>
         </div>`;
@@ -918,22 +1417,22 @@ function dockerHtml() {
           <div style="display:flex;align-items:center;gap:12px;font-size:13px">
             <span style="width:90px;color:var(--text2)">파일 크기</span>
             <span style="flex:1;height:10px;border-radius:5px;background:var(--track);overflow:hidden"><span style="display:block;width:100%;height:100%;background:#E79A9A"></span></span>
-            <span class="num" style="width:70px;text-align:right;font-weight:600">${fmtSize(disk.size)}</span>
+            <span class="num" style="width:64px;text-align:right;font-weight:600">${fmtSize(disk.size)}</span>
           </div>
           ${real > 0 ? `
           <div style="display:flex;align-items:center;gap:12px;font-size:13px">
             <span style="width:90px;color:var(--text2)">실제 데이터</span>
             <span style="flex:1;height:10px;border-radius:5px;background:var(--track);overflow:hidden"><span style="display:block;width:${Math.min(100, pct(real, disk.size))}%;height:100%;background:#E79A9A"></span></span>
-            <span class="num" style="width:70px;text-align:right;font-weight:600">${fmtSize(real)}</span>
+            <span class="num" style="width:64px;text-align:right;font-weight:600">${fmtSize(real)}</span>
           </div>` : ''}
-          ${gain > 0 && S.info.dockerCompact ? `<div style="font-size:13px;font-weight:600;color:var(--good)">압축하면 약 ${fmtSize(gain)}가 돌아와요</div>` : ''}
+          ${gain > 0 && S.info.dockerCompact ? `<div style="font-size:13px;font-weight:600;color:var(--good)">압축하면 약 ${fmtSize(gain)}가 ${/^[a-z]:/i.test(disk.path) ? esc(disk.path.slice(0, 2).toUpperCase()) + '로 ' : ''}돌아와요</div>` : ''}
         </div>
         ${S.info.dockerCompact ? `
         <div class="note plain">
           ${icon('alert', 18, 'color:var(--danger);stroke-width:1.9')}
           <span style="flex:1;min-width:220px">압축 전에 Docker Desktop을 완전히 종료해야 해요. 관리자 권한 확인 창이 뜨고, 몇 분 걸릴 수 있어요.</span>
-          <button type="button" class="btn" data-a="dockerQuit"${dk.desktopRunning && !S.dockerBusy ? '' : ' disabled'}>${S.dockerBusy === 'quit' ? '<span class="spinner"></span>' : ''}${dk.desktopRunning ? 'Docker Desktop 종료' : 'Docker Desktop 꺼짐'}</button>
-          <button type="button" class="btn inverse" data-a="dockerCompactAsk"${!dk.desktopRunning && !S.dockerBusy ? '' : ' disabled'}>${S.dockerBusy === 'compact' ? '<span class="spinner"></span>압축 중…' : '가상 디스크 압축'}</button>
+          <button type="button" class="btn tool short" data-a="dockerQuit"${dk.desktopRunning && !S.dockerBusy ? '' : ' disabled'}>${S.dockerBusy === 'quit' ? '<span class="spinner"></span>' : ''}${dk.desktopRunning ? 'Docker Desktop 종료' : 'Docker Desktop 꺼짐'}</button>
+          <button type="button" class="btn tool short inverse" data-a="dockerCompactAsk"${!dk.desktopRunning && !S.dockerBusy ? '' : ' disabled'}>${S.dockerBusy === 'compact' ? '<span class="spinner"></span>압축 중…' : '가상 디스크 압축'}</button>
         </div>` : ''}
       </div>`;
   }
@@ -978,8 +1477,12 @@ async function loadDrives() {
 }
 async function loadFolder(path) {
   try {
-    const f = await invoke('folder', { path: path || null });
-    if (f) { S.folder = f; S.selected = null; }
+    // 도넛으로 볼 때는 고리 트리도 함께 받아서 폴더와 그림이 한 번에 바뀌게 함
+    const [f, rings] = await Promise.all([
+      invoke('folder', { path: path || null }),
+      S.viz === 'sunburst' ? invoke('sunburst', { path: path || null }) : null,
+    ]);
+    if (f) { S.folder = f; S.selected = null; S.sun = rings ? { path: f.path, rings } : null; }
   } catch (e) { toast(errMsg(e)); }
 }
 async function afterScan() {
@@ -994,11 +1497,12 @@ async function afterScan() {
   S.dupChecked.clear();
   await loadFolder(null);
   await loadDrives();
-  if (S.view === 'start') S.view = 'folders';
+  if (S.view === 'drive' && S.tab === 'cleanup') ensureCleanup();
   render();
 }
 async function refreshAfterDelete() {
   const path = S.folder ? S.folder.path : null;
+  if (path) planTreemap('move', '', path);
   try {
     S.summary = await invoke('summary');
     S.big = await invoke('big_files');
@@ -1006,15 +1510,30 @@ async function refreshAfterDelete() {
   if (S.folder) await loadFolder(path);
   await loadDrives();
 }
+// 작업 공간의 드라이브에 맞춰 정리 추천을 (다시) 분석
+function ensureCleanup() {
+  const ws = workspace();
+  if (!ws || S.scan) return;
+  if (S.cleanupRoot !== ws.driveRoot) {
+    S.cleanupRoot = ws.driveRoot;
+    S.cleanup = null;
+    S.cleanChecked = null;
+    S.cleanOpen = null;
+    analyzeCleanup();
+  }
+}
 async function analyzeCleanup() {
   if (S.cleanupLoading) return;
   S.cleanupLoading = true;
   render();
   try {
-    const cats = await invoke('cleanup_analyze');
+    const root = S.cleanupRoot;
+    const cats = await invoke('cleanup_analyze', { root });
+    if (root !== S.cleanupRoot) { S.cleanupLoading = false; return analyzeCleanup(); }
     if (!S.cleanChecked) S.cleanChecked = new Set(cats.filter((c) => c.defaultOn).map((c) => c.id));
     for (const c of cats) if (c.size <= 0) S.cleanChecked.delete(c.id);
     S.cleanup = cats;
+    S.cleanupAt = Date.now();
   } catch (e) { toast(errMsg(e)); }
   S.cleanupLoading = false;
   render();
@@ -1034,16 +1553,30 @@ async function loadDocker() {
 
 async function startScan(root) {
   if (S.scan) return;
+  // 작은 폴더는 명령이 돌아오기 전에 scan-done이 올 수 있으므로 상태를 먼저 바꿈
+  const prev = { view: S.view, summary: S.summary, folder: S.folder, big: S.big };
+  S.scan = { root, progress: null };
+  S.view = 'drive';
+  S.tab = 'folders';
+  S.folder = null;
+  S.selected = null;
+  S.summary = null;
+  S.big = null;
+  S.dups = null;
+  S.dupChecked.clear();
+  S.cleanup = null;
+  S.cleanupRoot = null;
+  const d = driveOf(root);
+  if (d) S.drive = d.root;
+  render();
   try {
     await invoke('start_scan', { path: root });
-    S.scan = { root, progress: null };
-    S.view = 'folders';
-    S.folder = null;
-    S.selected = null;
-    const d = driveOf(root);
-    if (d) S.drive = d.root;
-  } catch (e) { toast(errMsg(e)); }
-  render();
+  } catch (e) {
+    S.scan = null;
+    Object.assign(S, prev);
+    toast(errMsg(e));
+    render();
+  }
 }
 
 async function doTrash(paths) {
@@ -1061,7 +1594,7 @@ async function doTrash(paths) {
       S.dups = S.dups.map((g) => ({ ...g, files: g.files.filter((f) => !gone.has(f.path)) })).filter((g) => g.files.length >= 2);
     }
     await refreshAfterDelete();
-    if (S.cleanup) analyzeCleanup();
+    if (S.cleanup && S.cleanupRoot) analyzeCleanup();
   } catch (e) { toast(errMsg(e)); }
   S.busy = '';
   render();
@@ -1094,20 +1627,26 @@ function fallbackCopy(text, done) {
 
 // ---------- 동작 ----------
 
+function selectTab(t) {
+  S.tab = t || 'folders';
+  if (S.tab === 'cleanup') ensureCleanup();
+  if (S.tab === 'folders' && !S.folder && S.summary) loadFolder(null).then(render);
+}
+
 const A = {
   nav(v) {
+    if (v === 'drive' && !workspace()) v = 'drives';
     S.view = v;
     S.modal = null;
-    if (v === 'cleanup' && !S.cleanup) analyzeCleanup();
     if (v === 'docker' && !S.docker) loadDocker();
-    if (v === 'folders' && !S.folder && S.summary) loadFolder(null).then(render);
+    if (v === 'drives' || v === 'home') loadDrives().then(render);
+    if (v === 'drive') selectTab(S.tab);
     document.getElementById('main').scrollTop = 0;
     render();
   },
-  drive(root) {
-    S.drive = root;
-    const scannedHere = S.summary && driveOf(S.summary.root) && driveOf(S.summary.root).root === root;
-    S.view = scannedHere ? 'folders' : 'start';
+  tab(t) {
+    selectTab(t);
+    document.getElementById('main').scrollTop = 0;
     render();
   },
   scan(root) { startScan(root); },
@@ -1127,13 +1666,34 @@ const A = {
   async enter(v) {
     const it = S.folder && S.folder.items[Number(v)];
     if (!it) return;
-    if (it.isDir) { await loadFolder(it.path); render(); } else invoke('reveal', { path: it.path });
+    if (it.isDir) { planTreemap('in', it.name, it.path); await loadFolder(it.path); render(); } else invoke('reveal', { path: it.path });
   },
   tile(v) { A.enter(v); },
-  async open(path) { await loadFolder(path); render(); },
+  viz(v) {
+    if (S.viz === v) return;
+    S.viz = v;
+    try { localStorage.setItem('disklens.viz', v); } catch (e) { /* 기억하지 못해도 동작에는 지장 없음 */ }
+    render();
+  },
+  // 도넛 조각: 폴더는 들어가고, 파일은 파일 관리자에서 보여 줌('그 외' 조각은 아무 일도 하지 않음)
+  async sun(v) {
+    const a = sunLast && sunLast.arcs[Number(v)];
+    if (!a || a.node.rest) return;
+    if (a.node.isDir) { await loadFolder(a.node.path); render(); } else invoke('reveal', { path: a.node.path });
+  },
+  async open(path) {
+    // 경로 표시 줄에서 상위 폴더로 갈 때: 지금 위치로 이어지는 바로 아래 칸으로 줄어듦
+    const c = S.folder ? S.folder.crumbs : [];
+    const k = c.findIndex((x) => x.path === path);
+    if (k >= 0 && k + 1 < c.length) planTreemap('out', c[k + 1].name, path);
+    await loadFolder(path);
+    render();
+  },
   async up() {
     if (!S.folder || S.folder.crumbs.length < 2) return;
-    await loadFolder(S.folder.crumbs[S.folder.crumbs.length - 2].path);
+    const c = S.folder.crumbs;
+    planTreemap('out', c[c.length - 1].name, c[c.length - 2].path);
+    await loadFolder(c[c.length - 2].path);
     render();
   },
   openItem() {
@@ -1154,7 +1714,7 @@ const A = {
     const items = (S.big || []).filter((b) => S.bigChecked.has(b.path)).map((b) => ({ path: b.path, name: b.name, size: b.size }));
     if (items.length) askTrash(items);
   },
-  catToBig(v) { S.bigCat = Number(v); S.bigQuery = ''; S.view = 'big'; render(); },
+  catToBig(v) { S.bigCat = Number(v); S.bigQuery = ''; S.tab = 'big'; render(); },
   cleanupAnalyze() { analyzeCleanup(); },
   cleanToggle(id) { S.cleanOpen = S.cleanOpen === id ? null : id; render(); },
   cleanupAsk() {
@@ -1171,7 +1731,7 @@ const A = {
         S.busy = 'cleanup';
         render();
         try {
-          const r = await invoke('cleanup_run', { ids: chosen.map((c) => c.id) });
+          const r = await invoke('cleanup_run', { ids: chosen.map((c) => c.id), root: S.cleanupRoot });
           const total = r.report.freed + r.recycleFreed;
           let msg = `${fmtSize(total)}를 정리했어요.`;
           if (r.report.trashed) msg += ` ${fmtSize(r.report.trashed)}는 휴지통으로 옮겼어요.`;
@@ -1310,14 +1870,15 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.modal) { S.modal = null; render(); return; }
   if (e.key === 'Enter' && S.modal && document.activeElement && document.activeElement.id === 'modalOk') return;
   const typing = e.target.matches && e.target.matches('input, select, textarea');
-  if (e.key === 'Backspace' && !typing && !S.modal && S.view === 'folders') { e.preventDefault(); A.up(); }
+  if (e.key === 'Backspace' && !typing && !S.modal && S.view === 'drive' && S.tab === 'folders') { e.preventDefault(); A.up(); }
 });
 document.addEventListener('mousemove', (e) => {
-  if (S.view === 'folders' && e.target.closest && e.target.closest('#treemap')) showTip(e);
+  const inBox = S.view === 'drive' && S.tab === 'folders' && e.target.closest && e.target.closest('#treemap');
+  if (inBox && S.viz === 'treemap') showTip(e);
   else document.getElementById('tip').innerHTML = '';
+  // 도넛 조각이나 왼쪽 목록 줄 위에 있으면 해당 조각을 강조
+  if (S.viz === 'sunburst') sunHover(S.view === 'drive' && S.tab === 'folders' ? e.target : null);
 });
-let resizeTimer = null;
-window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawTreemap, 80); });
 
 // ---------- 시작 ----------
 
@@ -1326,16 +1887,15 @@ async function init() {
   try { S.info = await invoke('app_info'); } catch (e) { /* 기본값 사용 */ }
   await loadDrives();
   render();
-  listen('scan-progress', (ev) => { if (S.scan) { S.scan.progress = ev.payload; render(); } });
+  listen('scan-progress', (ev) => { if (S.scan) { S.scan.progress = ev.payload; scheduleRender(); } });
   listen('scan-done', () => { afterScan(); });
-  listen('dups-progress', (ev) => { S.dupsProg = ev.payload; if (S.view === 'dups') render(); });
+  listen('dups-progress', (ev) => { S.dupsProg = ev.payload; if (S.view === 'drive' && S.tab === 'dups') scheduleRender(); });
   listen('dups-done', (ev) => {
     S.dupsRunning = false;
     S.dups = ev.payload;
     render();
   });
-  // 스캔 없이 쓸 수 있는 정보는 미리 불러와 사이드바 배지에 표시
-  analyzeCleanup();
+  // Docker 상태는 드라이브와 무관하므로 미리 불러와 배지에 표시
   loadDocker();
 }
 

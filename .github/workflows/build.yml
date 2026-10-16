@@ -22,6 +22,8 @@ jobs:
       - name: 테스트
         working-directory: src-tauri
         run: cargo test --release
+      - name: 화면 로직 테스트
+        run: node --test ui/
       - name: 빌드
         run: cargo tauri build
       - uses: actions/upload-artifact@v4

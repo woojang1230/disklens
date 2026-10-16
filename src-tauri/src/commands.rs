@@ -3,7 +3,7 @@
 //! 오래 걸리는 일(스캔, 중복 찾기)은 별도 스레드에서 돌리고 진행 상황을 이벤트로 보냅니다.
 //!   scan-progress / scan-done, dups-progress / dups-done
 
-use crate::{analysis, cleanup, delete, docker, dup, platform, scan};
+use crate::{analysis, cleanup, delete, docker, dup, platform, scan, sunburst};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -147,12 +147,15 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String) -> R
     let prog = inner.scan_prog.lock().unwrap().clone().unwrap();
 
     std::thread::spawn(move || {
+        // 명령은 화면 스레드에서 불리므로 새 스레드가 화면 우선순위를 물려받음: 낮춰 둠
+        platform::lower_thread_priority();
         let start = Instant::now();
         let done = Arc::new(AtomicBool::new(false));
 
         // 진행 상황 알림 스레드
         let (p2, d2, a2, r2) = (prog.clone(), done.clone(), app.clone(), root.clone());
         let ticker = std::thread::spawn(move || {
+            platform::lower_thread_priority();
             while !d2.load(Relaxed) {
                 let cur = p2.current.lock().map(|c| c.clone()).unwrap_or_default();
                 let _ = a2.emit(
@@ -168,7 +171,8 @@ pub fn start_scan(app: AppHandle, state: State<'_, AppState>, path: String) -> R
                         elapsed_ms: start.elapsed().as_millis() as u64,
                     },
                 );
-                std::thread::sleep(Duration::from_millis(150));
+                // 화면은 이 간격마다 한 번 그림. 4번/초면 숫자가 충분히 살아 움직임
+                std::thread::sleep(Duration::from_millis(250));
             }
         });
 
@@ -287,6 +291,8 @@ pub struct ItemDto {
     cat: usize,
     protected: bool,
     kids: Vec<KidDto>,
+    /// 크기가 있는 자식 전체 수. 트리맵이 `kids`에 없는 나머지를 '그 외 N개'로 묶을 때 씁니다.
+    kids_total: u64,
 }
 
 #[derive(Serialize)]
@@ -309,6 +315,8 @@ pub struct FolderDto {
 }
 
 const FOLDER_LIMIT: usize = 300;
+/// 트리맵 칸 안에 보여줄 자식 수 상한. 실제로 몇 개를 그릴지는 칸 크기에 맞춰 화면이 정합니다.
+const KIDS_LIMIT: usize = 40;
 
 /// 폴더 하나의 내용(큰 순서). path가 없으면 스캔 루트.
 #[tauri::command]
@@ -345,7 +353,7 @@ pub async fn folder(state: State<'_, AppState>, path: Option<String>) -> Res<Opt
                 let kids = if c.is_dir && i < 16 {
                     c.children
                         .iter()
-                        .take(8)
+                        .take(KIDS_LIMIT)
                         .filter(|k| k.size > 0)
                         .map(|k| KidDto {
                             name: k.name.to_string(),
@@ -368,6 +376,7 @@ pub async fn folder(state: State<'_, AppState>, path: Option<String>) -> Res<Opt
                     mtime: c.mtime,
                     cat: analysis::category_index(&c.name),
                     kids,
+                    kids_total: c.children.iter().filter(|k| k.size > 0).count() as u64,
                 }
             })
             .collect();
@@ -382,6 +391,21 @@ pub async fn folder(state: State<'_, AppState>, path: Option<String>) -> Res<Opt
             more,
             more_size,
         })
+    })
+    .await
+}
+
+/// 도넛 보기용: 폴더 아래 sunburst::DEPTH 단계까지의 고리 트리. path가 없으면 스캔 루트.
+#[tauri::command]
+pub async fn sunburst(state: State<'_, AppState>, path: Option<String>) -> Res<Option<Vec<sunburst::SunNode>>> {
+    let inner = state.0.clone();
+    blocking(move || {
+        let guard = inner.scan.lock().ok()?;
+        let d = guard.as_ref()?;
+        let target = path.map(PathBuf::from).unwrap_or_else(|| d.root_path.clone());
+        let nav = scan::find_nav(&d.root, &d.root_path, &target).unwrap_or_default();
+        let here = scan::path_of(&d.root_path, &d.root, &nav);
+        Some(sunburst::build(scan::node_at(&d.root, &nav), &here))
     })
     .await
 }
@@ -549,9 +573,11 @@ pub fn start_dups(app: AppHandle, state: State<'_, AppState>, min_mb: u64) -> Re
         *dp = Some(prog.clone());
     }
     std::thread::spawn(move || {
+        platform::lower_thread_priority();
         let done = Arc::new(AtomicBool::new(false));
         let (p2, d2, a2) = (prog.clone(), done.clone(), app.clone());
         let ticker = std::thread::spawn(move || {
+            platform::lower_thread_priority();
             while !d2.load(Relaxed) {
                 let _ = a2.emit(
                     "dups-progress",
@@ -630,11 +656,13 @@ pub struct CleanCatDto {
     items: Vec<CleanItemDto>,
 }
 
+/// 정리 추천 분석. `root`(드라이브 루트)를 주면 그 드라이브에 있는 항목만.
 #[tauri::command]
-pub async fn cleanup_analyze(state: State<'_, AppState>) -> Res<Vec<CleanCatDto>> {
+pub async fn cleanup_analyze(state: State<'_, AppState>, root: Option<String>) -> Res<Vec<CleanCatDto>> {
     let inner = state.0.clone();
     blocking(move || {
-        let cats = cleanup::analyze(platform::cleanup_categories());
+        let root = root.map(PathBuf::from);
+        let cats = cleanup::analyze(platform::cleanup_categories(), root.as_deref());
         let dto = cats
             .iter()
             .map(|c| CleanCatDto {
@@ -672,9 +700,14 @@ pub struct CleanRunDto {
 }
 
 #[tauri::command]
-pub async fn cleanup_run(state: State<'_, AppState>, ids: Vec<String>) -> Res<CleanRunDto> {
+pub async fn cleanup_run(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    root: Option<String>,
+) -> Res<CleanRunDto> {
     let inner = state.0.clone();
     blocking(move || {
+        let root = root.map(PathBuf::from);
         let cats = inner.cleanup.lock().map(|g| g.clone()).unwrap_or_default();
         let mut ops = Vec::new();
         let mut recycle = false;
@@ -696,7 +729,7 @@ pub async fn cleanup_run(state: State<'_, AppState>, ids: Vec<String>) -> Res<Cl
         let r = delete::run(ops, &delete::Progress::default());
         apply_removed(&inner, &r.removed);
         let (recycle_error, recycle_freed) = if recycle {
-            match platform::empty_recycle_bin() {
+            match platform::empty_recycle_bin(root.as_deref()) {
                 Ok(()) => (None, recycle_size),
                 Err(e) => (Some(e), 0),
             }

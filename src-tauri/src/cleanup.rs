@@ -68,18 +68,31 @@ impl Category {
     }
 }
 
-/// 모든 항목의 크기를 계산합니다.
-pub fn analyze(mut cats: Vec<Category>) -> Vec<Category> {
-    cats.par_iter_mut().for_each(analyze_one);
+/// 모든 항목의 크기를 계산합니다. `root`를 주면 그 드라이브에 있는 항목만 셉니다.
+pub fn analyze(mut cats: Vec<Category>, root: Option<&Path>) -> Vec<Category> {
+    cats.par_iter_mut().for_each(|c| analyze_one(c, root));
     cats
 }
 
-fn analyze_one(c: &mut Category) {
+/// 경로가 해당 드라이브(또는 폴더) 아래에 있는지. 드라이브 문자는 대소문자를 구분하지 않습니다.
+pub fn on_drive(path: &Path, root: Option<&Path>) -> bool {
+    match root {
+        None => true,
+        Some(r) => {
+            let p = path.to_string_lossy().to_lowercase().replace('/', "\\");
+            let r = r.to_string_lossy().to_lowercase().replace('/', "\\");
+            let r = r.trim_end_matches('\\');
+            p == r || p.starts_with(&format!("{}\\", r)) || r.is_empty()
+        }
+    }
+}
+
+fn analyze_one(c: &mut Category, root: Option<&Path>) {
     c.items.clear();
     c.size = 0;
     match &c.source {
         Source::DirContents(dirs) => {
-            for d in dirs {
+            for d in dirs.iter().filter(|d| on_drive(d, root)) {
                 let Ok(rd) = fs::read_dir(d) else { continue };
                 for e in rd.flatten() {
                     let p = e.path();
@@ -90,6 +103,9 @@ fn analyze_one(c: &mut Category) {
         }
         Source::OlderThan(dir, days) => {
             let cutoff = util::now_secs() - *days as i64 * 86_400;
+            if !on_drive(dir, root) {
+                return;
+            }
             if let Ok(rd) = fs::read_dir(dir) {
                 for e in rd.flatten() {
                     let p = e.path();
@@ -101,7 +117,7 @@ fn analyze_one(c: &mut Category) {
             }
         }
         Source::RecycleBin => {
-            c.size += crate::platform::recycle_bin_size();
+            c.size += crate::platform::recycle_bin_size(root);
         }
     }
     c.items.sort_unstable_by(|a, b| b.1.cmp(&a.1));

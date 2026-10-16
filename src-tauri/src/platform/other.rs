@@ -19,6 +19,32 @@ pub const FILE_MANAGER: &str = "파일 관리자";
 
 pub const DOCKER_COMPACT: bool = false;
 
+/// 지금 스레드의 우선순위를 낮춥니다. 스캔·해시 같은 무거운 작업 스레드에서 불러,
+/// 작업이 CPU를 다 써도 화면(WebView)이 먼저 돌게 합니다.
+#[cfg(target_os = "macos")]
+pub fn lower_thread_priority() {
+    // <pthread/qos.h>: 사용자가 결과를 기다리지만 화면보다는 뒤인 작업 등급
+    const QOS_CLASS_UTILITY: u32 = 0x11;
+    extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    unsafe {
+        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn lower_thread_priority() {
+    // Linux에서 who = 0이면 부른 스레드에만 적용됨 (nice 10)
+    const PRIO_PROCESS: i32 = 0;
+    extern "C" {
+        fn setpriority(which: i32, who: u32, prio: i32) -> i32;
+    }
+    unsafe {
+        setpriority(PRIO_PROCESS, 0, 10);
+    }
+}
+
 fn home() -> PathBuf {
     env_path("HOME").unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -182,11 +208,11 @@ fn trash_dir() -> PathBuf {
     }
 }
 
-pub fn recycle_bin_size() -> u64 {
+pub fn recycle_bin_size(_root: Option<&Path>) -> u64 {
     dir_size(&trash_dir()).0
 }
 
-pub fn empty_recycle_bin() -> Result<(), String> {
+pub fn empty_recycle_bin(_root: Option<&Path>) -> Result<(), String> {
     let dir = trash_dir();
     let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for e in rd.flatten() {

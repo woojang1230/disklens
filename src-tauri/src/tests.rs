@@ -92,7 +92,7 @@ fn scan_analyze_dup_delete() {
 #[cfg(not(windows))]
 #[test]
 fn cleanup_analyze_runs() {
-    let cats = cleanup::analyze(platform::cleanup_categories());
+    let cats = cleanup::analyze(platform::cleanup_categories(), None);
     assert!(cats.iter().any(|c| c.id == "user_cache"));
 }
 
@@ -118,6 +118,83 @@ fn platform_fallback_basics() {
     assert!(platform::is_protected(std::path::Path::new("/usr/lib")));
     assert!(!platform::is_protected(std::path::Path::new("/tmp/x")));
     assert!(!platform::scan_skip(std::path::Path::new("/")).is_empty());
-    let cats = cleanup::analyze(platform::cleanup_categories());
+    let cats = cleanup::analyze(platform::cleanup_categories(), None);
     assert!(cats.iter().any(|c| c.id == "recycle"));
+}
+
+#[test]
+fn cleanup_drive_filter() {
+    use std::path::Path;
+    assert!(cleanup::on_drive(Path::new(r"C:\Users\kim\AppData"), Some(Path::new(r"C:\"))));
+    assert!(cleanup::on_drive(Path::new(r"c:\temp"), Some(Path::new(r"C:\"))));
+    assert!(!cleanup::on_drive(Path::new(r"D:\Games"), Some(Path::new(r"C:\"))));
+    assert!(cleanup::on_drive(Path::new(r"D:\Games"), None));
+    assert!(!cleanup::on_drive(Path::new(r"C:\Usersx"), Some(Path::new(r"C:\Users"))));
+}
+
+fn node(name: &str, size: u64, children: Vec<scan::Node>) -> scan::Node {
+    let is_dir = !children.is_empty() || !name.contains('.');
+    let files = if is_dir { children.iter().map(|c| c.files).sum() } else { 1 };
+    scan::Node { name: name.into(), size, files, mtime: 0, is_dir, children }
+}
+
+#[test]
+fn sunburst_depth_limit_and_thin_grouping() {
+    use std::path::Path;
+    // DEPTH보다 두 단계 더 내려가는 폴더: 도넛에는 DEPTH 단계까지만 실림
+    let mut deep = node("deep.bin", 7200, vec![]);
+    for d in (1..=sunburst::DEPTH + 1).rev() {
+        deep = node(&format!("d{d}"), 7200, vec![deep]);
+    }
+    // 전체의 1/360보다 얇은 항목(10, 5)은 '그 외'로 묶이고, 크기 0은 빠짐
+    let root = node("root", 7215, vec![deep, node("a.txt", 10, vec![]), node("b.txt", 5, vec![]), node("z.txt", 0, vec![])]);
+    let base = Path::new("/r");
+    let rings = sunburst::build(&root, base);
+
+    assert_eq!(rings.len(), 2);
+    assert_eq!(rings[0].name, "d1");
+    assert_eq!(rings[0].path, base.join("d1").display().to_string());
+    assert_eq!(rings[0].rest, 0);
+    assert_eq!((rings[1].size, rings[1].rest), (15, 2));
+    assert!(rings[1].children.is_empty());
+
+    let mut depth = 0;
+    let mut n = &rings[0];
+    loop {
+        depth += 1;
+        match n.children.first() {
+            Some(c) => n = c,
+            None => break,
+        }
+    }
+    assert_eq!(depth, sunburst::DEPTH);
+    let want: Vec<String> = (1..=sunburst::DEPTH).map(|d| format!("d{d}")).collect();
+    assert_eq!(n.path, base.join(want.join("/")).display().to_string());
+}
+
+#[test]
+fn sunburst_threshold_is_relative_to_whole_folder() {
+    use std::path::Path;
+    // 하위 폴더 안에서는 큰 편이어도, 지금 폴더 전체에 비해 얇으면 묶임
+    // thin.bin: sub(100)에 비하면 10%지만 전체(7300)의 1/360보다 얇음
+    let sub = node("sub", 100, vec![node("big.bin", 90, vec![]), node("thin.bin", 10, vec![])]);
+    let root = node("root", 7300, vec![node("other.bin", 7200, vec![]), sub]);
+    let rings = sunburst::build(&root, Path::new("/r"));
+    let kids = &rings[1].children;
+    assert_eq!(kids.len(), 2);
+    assert_eq!(kids[0].name, "big.bin");
+    assert_eq!((kids[1].size, kids[1].rest), (10, 1));
+    assert!(sunburst::build(&node("empty", 0, vec![]), Path::new("/r")).is_empty());
+}
+
+#[test]
+fn sunburst_thin_boundary_is_one_degree() {
+    use std::path::Path;
+    // 전체 3600에서 1° = 10. 정확히 10이면 남기고, 9면 '그 외'로 묶음
+    let keep = node("root", 3600, vec![node("big.bin", 3590, vec![]), node("one.bin", 10, vec![])]);
+    let rings = sunburst::build(&keep, Path::new("/r"));
+    assert_eq!((rings[1].name.as_str(), rings[1].rest), ("one.bin", 0));
+    let thin = node("root", 3600, vec![node("big.bin", 3591, vec![]), node("thin.bin", 9, vec![])]);
+    let rings = sunburst::build(&thin, Path::new("/r"));
+    assert_eq!((rings[1].size, rings[1].rest), (9, 1));
 }
