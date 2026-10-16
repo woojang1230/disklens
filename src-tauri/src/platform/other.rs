@@ -18,6 +18,8 @@ pub const FILE_MANAGER: &str = "Finder";
 pub const FILE_MANAGER: &str = "파일 관리자";
 
 pub const DOCKER_COMPACT: bool = false;
+/// 맥 Docker Desktop은 지운 공간을 회수 명령으로 바로 돌려받을 수 있음(docker::reclaim)
+pub const DOCKER_RECLAIM: bool = cfg!(target_os = "macos");
 
 /// 지금 스레드의 우선순위를 낮춥니다. 스캔·해시 같은 무거운 작업 스레드에서 불러,
 /// 작업이 CPU를 다 써도 화면(WebView)이 먼저 돌게 합니다.
@@ -229,10 +231,12 @@ pub fn empty_recycle_bin(_root: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
+/// Docker 가상 디스크와 디스크에서 실제로 차지하는 크기.
+/// Docker.raw는 sparse 파일이라 겉보기 크기(최대 크기)가 아니라 실제 블록 수로 잼
 pub fn docker_disks() -> Vec<(PathBuf, u64)> {
     let p = home().join("Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw");
     match std::fs::metadata(&p) {
-        Ok(m) => vec![(p, m.len())],
+        Ok(m) => vec![(p, crate::util::allocated_size(&m))],
         Err(_) => Vec::new(),
     }
 }

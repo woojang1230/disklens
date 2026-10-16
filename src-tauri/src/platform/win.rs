@@ -13,6 +13,8 @@ pub const OS: &str = "windows";
 pub const FILE_MANAGER: &str = "탐색기";
 /// Docker 가상 디스크를 이 앱에서 압축할 수 있는지
 pub const DOCKER_COMPACT: bool = true;
+/// 맥 전용 회수 명령은 쓰지 않음(Windows는 vhdx 압축)
+pub const DOCKER_RECLAIM: bool = false;
 
 /// 지금 스레드의 우선순위를 한 단계 낮춥니다. 스캔·해시 같은 무거운 작업 스레드에서 불러,
 /// 작업이 CPU를 다 써도 화면(WebView)이 먼저 돌게 합니다.

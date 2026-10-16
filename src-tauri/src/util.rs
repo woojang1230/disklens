@@ -25,6 +25,14 @@ pub fn fmt_size(b: u64) -> String {
     }
 }
 
+/// 파일이 디스크에서 실제로 차지하는 크기. sparse 파일(맥의 Docker.raw 등)은
+/// 겉보기 크기(len)가 최대 크기라서 실제보다 훨씬 크게 나옵니다.
+#[cfg(unix)]
+pub fn allocated_size(m: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.blocks() * 512
+}
+
 pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

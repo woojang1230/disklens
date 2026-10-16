@@ -59,6 +59,7 @@ pub struct AppInfo {
     os: &'static str,
     file_manager: &'static str,
     docker_compact: bool,
+    docker_reclaim: bool,
 }
 
 #[tauri::command]
@@ -67,6 +68,7 @@ pub fn app_info() -> AppInfo {
         os: platform::OS,
         file_manager: platform::FILE_MANAGER,
         docker_compact: platform::DOCKER_COMPACT,
+        docker_reclaim: platform::DOCKER_RECLAIM,
     }
 }
 
@@ -794,6 +796,49 @@ pub async fn docker_compact() -> Res<String> {
             return Err("가상 디스크 파일을 찾지 못했어요.".to_string());
         }
         platform::compact_docker_disks(&files)
+    })
+    .await?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReclaimDto {
+    ok: bool,
+    message: String,
+    log: String,
+}
+
+/// 맥: Docker 가상 디스크에서 지운 공간을 바로 돌려받습니다(Docker Desktop이 켜져 있어야 함).
+#[tauri::command]
+pub async fn docker_reclaim() -> Res<ReclaimDto> {
+    blocking(|| {
+        if !platform::DOCKER_RECLAIM {
+            return Err("이 OS에서는 쓸 수 없는 기능이에요.".to_string());
+        }
+        let size = || platform::docker_disks().first().map(|d| d.1).unwrap_or(0);
+        let before = size();
+        let mut log = String::new();
+        if !docker::reclaim(&mut log) {
+            return Ok(ReclaimDto {
+                ok: false,
+                message: "공간을 돌려받지 못했어요. 실행 로그를 확인하세요.".to_string(),
+                log,
+            });
+        }
+        // 호스트 쪽 파일은 명령이 끝난 뒤 몇 초에 걸쳐 줄어듦:
+        // 3초 연속 그대로일 때까지(최대 15초) 기다림
+        let mut after = size();
+        let mut still = 0;
+        for _ in 0..15 {
+            std::thread::sleep(Duration::from_secs(1));
+            let now = size();
+            still = if now < after { 0 } else { still + 1 };
+            after = after.min(now);
+            if still >= 3 {
+                break;
+            }
+        }
+        Ok(ReclaimDto { ok: true, message: docker::reclaim_message(before, after), log })
     })
     .await?
 }

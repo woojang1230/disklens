@@ -111,7 +111,7 @@ const baseName = (p) => String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() ||
 // ---------- 상태 ----------
 
 const S = {
-  info: { os: 'windows', fileManager: '탐색기', dockerCompact: true },
+  info: { os: 'windows', fileManager: '탐색기', dockerCompact: true, dockerReclaim: false },
   drives: [],
   drive: null, // 선택한 드라이브 root
   view: 'home', // home | drives | drive | programs | docker
@@ -144,6 +144,7 @@ const S = {
   dockerChecked: null,
   dockerBusy: '',
   dockerLog: '',
+  dockerReclaimMsg: '', // 맥: 마지막 공간 돌려받기 결과
   modal: null,
   busy: '',
 };
@@ -1408,14 +1409,16 @@ function dockerHtml() {
         <div style="display:flex;align-items:center;gap:12px">
           <span class="step">2</span>
           <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
-            <h2 style="margin:0;font-size:16px;font-weight:600">${S.info.dockerCompact ? 'Windows로 공간 돌려받기' : '가상 디스크'}</h2>
-            <span class="sub" style="color:var(--text2)">${S.info.dockerCompact ? 'Docker는 데이터를 가상 디스크 파일 하나에 담아요. 안에서 지워도 이 파일은 저절로 줄지 않아요.' : '이 OS에서는 Docker가 지운 공간을 자동으로 돌려줘요.'}</span>
+            <h2 style="margin:0;font-size:16px;font-weight:600">${S.info.dockerCompact ? 'Windows로 공간 돌려받기' : S.info.dockerReclaim ? '지운 공간 돌려받기' : '가상 디스크'}</h2>
+            <span class="sub" style="color:var(--text2)">${S.info.dockerCompact ? 'Docker는 데이터를 가상 디스크 파일 하나에 담아요. 안에서 지워도 이 파일은 저절로 줄지 않아요.'
+              : S.info.dockerReclaim ? '이미지를 지우면 몇 분 안에 저절로 돌아와요. 실행 중인 컨테이너 안에서 지운 파일처럼 저절로 돌아오지 않는 공간은 여기서 바로 돌려받을 수 있어요.'
+              : '이 OS에서는 Docker가 지운 공간을 자동으로 돌려줘요.'}</span>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:10px;background:var(--surface2)">
           <span class="mono ellipsis" style="font-size:12px;color:var(--text2)">${esc(disk.path)}</span>
           <div style="display:flex;align-items:center;gap:12px;font-size:13px">
-            <span style="width:90px;color:var(--text2)">파일 크기</span>
+            <span style="width:90px;color:var(--text2)">${S.info.dockerReclaim ? '디스크 차지' : '파일 크기'}</span>
             <span style="flex:1;height:10px;border-radius:5px;background:var(--track);overflow:hidden"><span style="display:block;width:100%;height:100%;background:#E79A9A"></span></span>
             <span class="num" style="width:64px;text-align:right;font-weight:600">${fmtSize(disk.size)}</span>
           </div>
@@ -1426,7 +1429,14 @@ function dockerHtml() {
             <span class="num" style="width:64px;text-align:right;font-weight:600">${fmtSize(real)}</span>
           </div>` : ''}
           ${gain > 0 && S.info.dockerCompact ? `<div style="font-size:13px;font-weight:600;color:var(--good)">압축하면 약 ${fmtSize(gain)}가 ${/^[a-z]:/i.test(disk.path) ? esc(disk.path.slice(0, 2).toUpperCase()) + '로 ' : ''}돌아와요</div>` : ''}
+          ${S.info.dockerReclaim && S.dockerReclaimMsg ? `<div style="font-size:13px;font-weight:600;color:var(--good)">${esc(S.dockerReclaimMsg)}</div>` : ''}
         </div>
+        ${S.info.dockerReclaim ? `
+        <div class="note plain">
+          ${icon('alert', 18, 'color:var(--text3);stroke-width:1.9')}
+          <span style="flex:1;min-width:220px">Docker Desktop이 켜져 있어야 해요. 처음 한 번은 Docker 공식 도구 이미지를 받아요.</span>
+          <button type="button" class="btn tool short inverse" data-a="dockerReclaimAsk"${!dk.error && !S.dockerBusy ? '' : ' disabled'}>${S.dockerBusy === 'reclaim' ? '<span class="spinner"></span>돌려받는 중…' : '공간 돌려받기'}</button>
+        </div>` : ''}
         ${S.info.dockerCompact ? `
         <div class="note plain">
           ${icon('alert', 18, 'color:var(--danger);stroke-width:1.9')}
@@ -1820,6 +1830,31 @@ const A = {
       },
     };
     void disk;
+    render();
+  },
+  // 맥: Docker 공식 회수 도구로 가상 디스크의 빈 공간을 바로 돌려받음
+  dockerReclaimAsk() {
+    S.modal = {
+      tone: 'good', icon: 'docker', title: '지운 공간을 돌려받을까요?',
+      desc: 'Docker 가상 디스크에서 비어 있는 공간을 맥으로 돌려줘요. Docker 안의 이미지·컨테이너·볼륨은 그대로예요.',
+      items: S.docker.disks.map((d) => [baseName(d.path), d.size]),
+      warning: 'Docker 공식 도구(docker/desktop-reclaim-space)를 권한 있는(privileged) 컨테이너로 잠깐 실행해요. 처음 한 번은 Docker Hub에서 이미지를 받아요.',
+      confirm: '돌려받기',
+      onConfirm: async () => {
+        S.dockerBusy = 'reclaim';
+        S.dockerReclaimMsg = '';
+        render();
+        try {
+          const r = await invoke('docker_reclaim');
+          S.dockerLog = r.log;
+          if (r.ok) S.dockerReclaimMsg = r.message;
+          toast(r.message);
+        } catch (e) { toast(errMsg(e)); }
+        S.dockerBusy = '';
+        await loadDrives();
+        await loadDocker();
+      },
+    };
     render();
   },
   modalCancel() { S.modal = null; render(); },

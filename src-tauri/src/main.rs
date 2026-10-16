@@ -44,6 +44,7 @@ fn main() {
             commands::docker_prune,
             commands::docker_quit,
             commands::docker_compact,
+            commands::docker_reclaim,
         ])
         .run(tauri::generate_context!())
         .expect("DiskLens를 시작하지 못했어요");

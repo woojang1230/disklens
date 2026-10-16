@@ -198,3 +198,38 @@ fn sunburst_thin_boundary_is_one_degree() {
     let rings = sunburst::build(&thin, Path::new("/r"));
     assert_eq!((rings[1].size, rings[1].rest), (9, 1));
 }
+
+#[cfg(unix)]
+#[test]
+fn allocated_size_counts_only_written_blocks() {
+    use std::io::Write;
+    // Docker.raw처럼 겉보기 크기만 큰 sparse 파일: 실제로 차지하는 크기는 쓴 만큼만
+    let dir = tmp("sparse");
+    let p = dir.join("disk.raw");
+    let mut f = fs::File::create(&p).unwrap();
+    f.set_len(256 * 1024 * 1024).unwrap();
+    f.write_all(&vec![1u8; 1024 * 1024]).unwrap();
+    f.sync_all().unwrap();
+    let m = fs::metadata(&p).unwrap();
+    assert_eq!(m.len(), 256 * 1024 * 1024);
+    let real = util::allocated_size(&m);
+    assert!(real >= 1024 * 1024, "쓴 만큼은 차지함: {real}");
+    assert!(real < 64 * 1024 * 1024, "겉보기 크기가 아니라 실제 블록: {real}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn docker_reclaim_command_and_message() {
+    // Docker 공식 문서의 회수 명령(+ 끝나면 컨테이너를 지우는 --rm)
+    assert_eq!(
+        docker::reclaim_args(),
+        ["run", "--rm", "--privileged", "--pid=host", "docker/desktop-reclaim-space"]
+    );
+    let gb = 1024 * 1024 * 1024;
+    assert_eq!(docker::reclaim_message(20 * gb, 17 * gb), "3.00 GB를 돌려받았어요. (20.0 GB → 17.0 GB)");
+    // 줄어든 양이 작아 앞뒤가 같은 숫자로 보이면 괄호 대신 지금 크기만
+    assert_eq!(docker::reclaim_message(17 * gb + 14 * 1024 * 1024, 17 * gb), "14.0 MB를 돌려받았어요. 지금 17.0 GB를 차지하고 있어요.");
+    assert_eq!(docker::reclaim_message(17 * gb, 17 * gb), "돌려받을 빈 공간이 없었어요. 지금 17.0 GB를 차지하고 있어요.");
+    // 회수 중에 Docker가 더 써서 커진 경우도 '없었어요'로
+    assert_eq!(docker::reclaim_message(17 * gb, 18 * gb), "돌려받을 빈 공간이 없었어요. 지금 18.0 GB를 차지하고 있어요.");
+}
