@@ -235,6 +235,8 @@ fn docker_reclaim_command_and_message() {
     assert_eq!(docker::reclaim_message(17 * gb, 18 * gb), "돌려받을 빈 공간이 없었어요. 지금 18.0 GB를 차지하고 있어요.");
 }
 
+// 맥 앱 전용 기능이고 경로를 '/'로 이어 붙이므로 Unix에서만
+#[cfg(unix)]
 #[test]
 fn gui_path_adds_docker_locations() {
     use std::path::Path;
