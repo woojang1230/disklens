@@ -9,12 +9,17 @@ mod docker;
 mod dup;
 mod platform;
 mod scan;
+mod sunburst;
 mod util;
 
 #[cfg(test)]
 mod tests;
 
 fn main() {
+    // 중복 비교·정리 분석이 쓰는 전역 작업 스레드도 화면보다 낮은 우선순위로
+    let _ = rayon::ThreadPoolBuilder::new()
+        .start_handler(|_| platform::lower_thread_priority())
+        .build_global();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
@@ -28,6 +33,7 @@ fn main() {
             commands::cancel_scan,
             commands::summary,
             commands::folder,
+            commands::sunburst,
             commands::big_files,
             commands::trash,
             commands::start_dups,
@@ -38,6 +44,7 @@ fn main() {
             commands::docker_prune,
             commands::docker_quit,
             commands::docker_compact,
+            commands::docker_reclaim,
         ])
         .run(tauri::generate_context!())
         .expect("DiskLens를 시작하지 못했어요");

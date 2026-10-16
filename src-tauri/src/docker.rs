@@ -131,6 +131,33 @@ fn run_logged(args: &[&str], log: &mut String) -> bool {
     }
 }
 
+/// 맥 Docker Desktop의 가상 디스크(Docker.raw)에서 지운 공간을 바로 돌려받는 Docker 공식 명령.
+/// 이미지를 지우면 저절로 돌아오지만, 실행 중인 컨테이너 안에서 지운 파일은 이 명령으로만 돌아옵니다.
+/// https://docs.docker.com/desktop/troubleshoot-and-support/faqs/macfaqs/
+pub fn reclaim_args() -> [&'static str; 5] {
+    ["run", "--rm", "--privileged", "--pid=host", "docker/desktop-reclaim-space"]
+}
+
+/// 회수 명령을 실행하고 로그에 남깁니다. 성공하면 true
+pub fn reclaim(log: &mut String) -> bool {
+    run_logged(&reclaim_args(), log)
+}
+
+/// 회수 전후 실제 크기로 결과 문구를 만듭니다.
+pub fn reclaim_message(before: u64, after: u64) -> String {
+    if after < before {
+        let (from, to) = (util::fmt_size(before), util::fmt_size(after));
+        let gain = util::fmt_size(before - after);
+        if from == to {
+            format!("{gain}를 돌려받았어요. 지금 {to}를 차지하고 있어요.")
+        } else {
+            format!("{gain}를 돌려받았어요. ({from} → {to})")
+        }
+    } else {
+        format!("돌려받을 빈 공간이 없었어요. 지금 {}를 차지하고 있어요.", util::fmt_size(after))
+    }
+}
+
 /// 선택한 종류를 순서대로 정리하고 로그를 돌려줍니다.
 /// 컨테이너를 먼저 지워야 이미지·볼륨이 "사용 안 함"이 되므로 순서를 맞춥니다.
 pub fn prune(kinds: &[String]) -> String {

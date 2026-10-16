@@ -33,14 +33,17 @@ pub struct Progress {
 
 /// `skip`에 든 경로는 들어가지 않습니다(같은 데이터를 두 번 세는 것을 막기 위함).
 pub fn scan(root: &Path, prog: &Progress, skip: &[PathBuf]) -> Node {
-    let threads = std::thread::available_parallelism()
+    let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let pool = rayon::ThreadPoolBuilder::new()
-        // 디스크 I/O 대기가 많아 CPU 수보다 넉넉하게
-        .num_threads((threads * 2).clamp(4, 32))
+        // 스캔은 파일 시스템이 병목이라 스레드를 늘려도 빨라지지 않고, 코어만 차지해 화면이 끊김.
+        // 코어 10개 맥에서 ~/Library(파일 629만 개) 스캔: 20개 97~100초, 8개 91~93초, 6개 88~91초, 4개 95~97초
+        .num_threads((cpus / 2 + 1).clamp(4, 8))
         // 아주 깊은 폴더 구조에서도 스택이 넘치지 않도록
         .stack_size(32 * 1024 * 1024)
+        // 스캔이 CPU를 다 써도 화면은 끊기지 않도록 작업 스레드 우선순위를 낮춤
+        .start_handler(|_| crate::platform::lower_thread_priority())
         .build();
     let mut node = match pool {
         Ok(p) => p.install(|| scan_dir(root, prog, 0, skip)),

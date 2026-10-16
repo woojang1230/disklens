@@ -25,6 +25,14 @@ pub fn fmt_size(b: u64) -> String {
     }
 }
 
+/// 파일이 디스크에서 실제로 차지하는 크기. sparse 파일(맥의 Docker.raw 등)은
+/// 겉보기 크기(len)가 최대 크기라서 실제보다 훨씬 크게 나옵니다.
+#[cfg(unix)]
+pub fn allocated_size(m: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.blocks() * 512
+}
+
 pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -41,9 +49,36 @@ pub fn mtime_of(m: &std::fs::Metadata) -> i64 {
 }
 
 /// 콘솔 창이 뜨지 않는 Command
+/// Finder·Dock에서 실행한 맥 앱의 PATH(/usr/bin:/bin:/usr/sbin:/sbin)에 docker가 있는 곳을 덧붙입니다.
+/// 원래 PATH 순서는 그대로 앞에 두고, 이미 있는 경로는 다시 붙이지 않습니다.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn gui_path(current: &str, home: &std::path::Path) -> String {
+    let extra = [
+        "/usr/local/bin".to_string(),
+        "/opt/homebrew/bin".to_string(),
+        home.join(".docker/bin").display().to_string(),
+        "/Applications/Docker.app/Contents/Resources/bin".to_string(),
+    ];
+    let mut parts: Vec<String> = current.split(':').filter(|x| !x.is_empty()).map(String::from).collect();
+    for e in extra {
+        if !parts.contains(&e) {
+            parts.push(e);
+        }
+    }
+    parts.join(":")
+}
+
 pub fn hidden_command(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(program);
+    // 맥: 앱을 Finder에서 실행하면 PATH가 짧아 docker 같은 명령을 못 찾음.
+    // Command는 자식에게 준 PATH로 프로그램을 찾으므로 여기서 넓혀 줌
+    #[cfg(target_os = "macos")]
+    {
+        let cur = std::env::var("PATH").unwrap_or_default();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        c.env("PATH", gui_path(&cur, &home));
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
